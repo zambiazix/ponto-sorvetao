@@ -130,7 +130,7 @@ const excluirLoja = async (email) => {
   if (!window.confirm("⚠️ Deseja excluir esta loja? Esta ação")) return;
 
   try {
-    const resp = await fetch("http://localhost:3001/deletar-loja", {
+    const resp = await fetch(`${import.meta.env.VITE_API_URL}/deletar-loja`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email }),

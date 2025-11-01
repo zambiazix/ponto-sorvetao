@@ -12,7 +12,17 @@ dotenv.config();
 
 // Inicializa express
 const app = express();
-app.use(cors());
+
+// ✅ Configuração CORS — permite chamadas do Vercel e localhost
+app.use(cors({
+  origin: [
+    "https://ponto-sorvetao.vercel.app", // seu domínio no Vercel
+    "http://localhost:5173", // durante desenvolvimento local (Vite)
+  ],
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+}));
+
 app.use(express.json());
 
 // Configura dayjs com fuso horário de Brasília
@@ -48,7 +58,6 @@ const PORT = process.env.PORT || 3001;
 async function aplicarFolgaAutomatica() {
   console.log("🕓 Iniciando verificação de folgas automáticas...");
 
-  // Usa fuso horário de Brasília para consistência
   const hoje = dayjs().tz(tz).format("YYYY-MM-DD");
 
   try {
@@ -73,7 +82,7 @@ async function aplicarFolgaAutomatica() {
           .doc(hoje);
 
         const pontoSnap = await pontoRef.get();
-        // IMPORTANTE: use pontoSnap.exists (função) — verificar corretamente
+
         if (!pontoSnap.exists) {
           await pontoRef.set({
             data: hoje,
@@ -119,7 +128,6 @@ cron.schedule(
 // ===================================================
 // 🗑️ Rota para deletar loja + usuário Firebase
 // ===================================================
-// Recebe: { email: string }
 app.post("/deletar-loja", async (req, res) => {
   try {
     const { email } = req.body;
@@ -130,7 +138,6 @@ app.post("/deletar-loja", async (req, res) => {
 
     console.log(`🗑️ Solicitada exclusão da loja: ${email}`);
 
-    // Buscar documento da loja no Firestore
     const lojaRef = db.collection("lojas").doc(email);
     const lojaDoc = await lojaRef.get();
 
