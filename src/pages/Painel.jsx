@@ -98,93 +98,103 @@ export default function Painel() {
   };
 
   // 🧠 Função de reconhecimento facial no botão "Ver Perfil"
-  const handleReconhecimentoFacial = async (funcId, nomeFuncionario) => {
-    const user = auth.currentUser;
-    if (user && user.uid === ADMIN_UID) {
-      navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
+const handleReconhecimentoFacial = async (funcId, nomeFuncionario) => {
+  const user = auth.currentUser;
+  if (user && user.uid === ADMIN_UID) {
+    navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
+    return;
+  }
+
+  try {
+    // 🔹 Busca dados do funcionário no Firestore
+    const funcRef = doc(db, "lojas", lojaId, "funcionarios", funcId);
+    const funcSnap = await getDoc(funcRef);
+
+    if (!funcSnap.exists()) {
+      alert("Funcionário não encontrado.");
       return;
     }
 
-    try {
-      // Carregar modelos do face-api
-      await Promise.all([
-        faceapi.nets.tinyFaceDetector.loadFromUri("/models"),
-        faceapi.nets.faceRecognitionNet.loadFromUri("/models"),
-        faceapi.nets.faceLandmark68Net.loadFromUri("/models"),
-      ]);
+    const funcData = funcSnap.data();
 
-      const imageUrl = `${CLOUDINARY_BASE_URL}${funcId}.jpg`;
-
-      const referenceImage = await faceapi.fetchImage(imageUrl).catch(() => null);
-      if (!referenceImage) {
-        alert("⚠️ Este funcionário ainda não possui imagem cadastrada para reconhecimento facial.");
-        return;
-      }
-
-      const labeledDescriptor = await faceapi
-        .detectSingleFace(referenceImage)
-        .withFaceLandmarks()
-        .withFaceDescriptor();
-
-      if (!labeledDescriptor) {
-        alert("❌ Não foi possível processar a imagem de referência.");
-        return;
-      }
-
-      const faceMatcher = new faceapi.FaceMatcher(
-        new faceapi.LabeledFaceDescriptors(nomeFuncionario, [
-          labeledDescriptor.descriptor,
-        ])
-      );
-
-      // Cria vídeo temporário
-      const video = document.createElement("video");
-      video.autoplay = true;
-      video.style.position = "fixed";
-      video.style.top = "50%";
-      video.style.left = "50%";
-      video.style.transform = "translate(-50%, -50%)";
-      video.style.zIndex = 9999;
-      video.style.border = "2px solid #fff";
-      video.style.borderRadius = "10px";
-      video.width = 400;
-      video.height = 300;
-      document.body.appendChild(video);
-
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      video.srcObject = stream;
-
-      alert("📸 Olhe para a câmera por alguns segundos para verificação...");
-
-      // Aguardar alguns segundos
-      await new Promise((res) => setTimeout(res, 4000));
-
-      const detection = await faceapi
-        .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
-        .withFaceLandmarks()
-        .withFaceDescriptor();
-
-      stream.getTracks().forEach((t) => t.stop());
-      video.remove();
-
-      if (!detection) {
-        alert("❌ Nenhum rosto detectado. Tente novamente.");
-        return;
-      }
-
-      const bestMatch = faceMatcher.findBestMatch(detection.descriptor);
-
-      if (bestMatch.label === nomeFuncionario && bestMatch.distance < 0.5) {
-        alert("✅ Rosto reconhecido com sucesso!");
-        navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
-      } else {
-        alert("⚠️ Rosto não reconhecido. Acesso negado.");
-      }
-    } catch (err) {
-      console.error("Erro no reconhecimento facial:", err);
-      alert("Erro durante o reconhecimento facial.");
+    // Verifica se tem foto
+    if (!funcData.fotoReferencia) {
+      alert("⚠️ Este funcionário ainda não possui imagem cadastrada para reconhecimento facial.");
+      return;
     }
-  };
+
+    // Carregar modelos do face-api
+    await Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri("/models"),
+      faceapi.nets.faceRecognitionNet.loadFromUri("/models"),
+      faceapi.nets.faceLandmark68Net.loadFromUri("/models"),
+    ]);
+
+    // Pega a imagem do campo salvo
+    const referenceImage = await faceapi.fetchImage(funcData.fotoReferencia);
+    const labeledDescriptor = await faceapi
+      .detectSingleFace(referenceImage)
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+
+    if (!labeledDescriptor) {
+      alert("❌ Não foi possível processar a imagem de referência.");
+      return;
+    }
+
+    const faceMatcher = new faceapi.FaceMatcher(
+      new faceapi.LabeledFaceDescriptors(nomeFuncionario, [
+        labeledDescriptor.descriptor,
+      ])
+    );
+
+    // Cria vídeo temporário
+    const video = document.createElement("video");
+    video.autoplay = true;
+    video.style.position = "fixed";
+    video.style.top = "50%";
+    video.style.left = "50%";
+    video.style.transform = "translate(-50%, -50%)";
+    video.style.zIndex = 9999;
+    video.style.border = "2px solid #fff";
+    video.style.borderRadius = "10px";
+    video.width = 400;
+    video.height = 300;
+    document.body.appendChild(video);
+
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    video.srcObject = stream;
+
+    alert("📸 Olhe para a câmera por alguns segundos para verificação...");
+
+    await new Promise((res) => setTimeout(res, 4000));
+
+    const detection = await faceapi
+      .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+
+    stream.getTracks().forEach((t) => t.stop());
+    video.remove();
+
+    if (!detection) {
+      alert("❌ Nenhum rosto detectado. Tente novamente.");
+      return;
+    }
+
+    const bestMatch = faceMatcher.findBestMatch(detection.descriptor);
+
+    if (bestMatch.label === nomeFuncionario && bestMatch.distance < 0.5) {
+      alert("✅ Rosto reconhecido com sucesso!");
+      navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
+    } else {
+      alert("⚠️ Rosto não reconhecido. Acesso negado.");
+    }
+  } catch (err) {
+    console.error("Erro no reconhecimento facial:", err);
+    alert("Erro durante o reconhecimento facial.");
+  }
+};
 
   if (carregando) {
     return (
