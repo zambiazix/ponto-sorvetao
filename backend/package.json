@@ -1,0 +1,25 @@
+{
+  "name": "pontosorvetao-backend",
+  "version": "1.0.0",
+  "description": "Servidor backend para aplicar folgas automáticas e integrar com o Firebase",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dayjs": "^1.11.18",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "firebase-admin": "^12.5.0",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "keywords": [],
+  "author": "Rodrigo Zambiazi",
+  "license": "MIT"
+}
