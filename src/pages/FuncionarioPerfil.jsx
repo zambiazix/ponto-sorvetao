@@ -29,7 +29,6 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
-  Link,
   Chip,
   IconButton,
 } from "@mui/material";
@@ -40,7 +39,6 @@ import CameraAltIcon from "@mui/icons-material/CameraAlt";
 import CancelIcon from "@mui/icons-material/Cancel";
 import ExitToAppIcon from "@mui/icons-material/ExitToApp";
 import PhotoCamera from "@mui/icons-material/PhotoCamera";
-import CloudUploadIcon from "@mui/icons-material/CloudUpload";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 
 import { uploadImage } from "../services/cloudinary";
@@ -70,15 +68,7 @@ export default function FuncionarioPerfil() {
   const [carregando, setCarregando] = useState(true);
   const [uploadingAtestado, setUploadingAtestado] = useState(false);
 
-  const statusList = [
-    "OK",
-    "FALTA",
-    "ATESTADO",
-    "FÉRIAS",
-    "SUSPENSÃO",
-    "DISPENSA",
-    "FOLGA",
-  ];
+  const statusList = ["OK", "FALTA", "ATESTADO", "FÉRIAS", "SUSPENSÃO", "DISPENSA", "FOLGA"];
 
   const statusEmojis = {
     OK: "✅",
@@ -100,20 +90,15 @@ export default function FuncionarioPerfil() {
   useEffect(() => {
     (async () => {
       try {
-        await loadFaceApiModels(); // carrega modelos (public/models)
+        await loadFaceApiModels();
       } catch (err) {
-        console.warn(
-          "Falha ao carregar modelos face-api (ok se ainda não tiver):",
-          err
-        );
+        console.warn("Falha ao carregar modelos face-api:", err);
       }
       await carregarLoja();
       await carregarFuncionario();
       await carregarPontos();
-      // chamamos verificarFolgaAutomatica depois dos carregamentos para usar dados atualizados
       await verificarFolgaAutomatica();
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lojaId, funcionarioId]);
 
   const carregarLoja = async () => {
@@ -127,16 +112,13 @@ export default function FuncionarioPerfil() {
 
   const carregarFuncionario = async () => {
     try {
-      const funcSnap = await getDoc(
-        doc(db, "lojas", lojaId, "funcionarios", funcionarioId)
-      );
+      const funcSnap = await getDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId));
       if (funcSnap.exists()) setFuncData(funcSnap.data());
     } catch (err) {
       console.error("Erro carregarFuncionario:", err);
     }
   };
 
-  // carregarPontos: força recarregar a lista (usar servidor implicitamente ao pedir novamente)
   const carregarPontos = async () => {
     try {
       setCarregando(true);
@@ -146,7 +128,6 @@ export default function FuncionarioPerfil() {
       const lista = snap.docs
         .map((d) => ({ id: d.id, ...d.data() }))
         .sort((a, b) => b.id.localeCompare(a.id));
-      console.log("📅 Pontos carregados do Firestore:", lista.map((p) => p.id));
       setPontos(lista);
     } catch (err) {
       console.error("Erro carregarPontos:", err);
@@ -155,26 +136,17 @@ export default function FuncionarioPerfil() {
     }
   };
 
-  // Usa data local (corrige problemas de fuso).
-  // Aqui usamos Intl DateTimeFormat com timeZone explicitamente para garantir YYYY-MM-DD em horário de São Paulo.
   const getHojeId = () => {
     try {
-      const hoje = new Intl.DateTimeFormat("en-CA", {
-        timeZone: BRAZIL_TZ,
-      }).format(new Date()); // en-CA -> YYYY-MM-DD
+      const hoje = new Intl.DateTimeFormat("en-CA", { timeZone: BRAZIL_TZ }).format(new Date());
       if (/^\d{4}-\d{2}-\d{2}$/.test(hoje)) return hoje;
-    } catch (err) {
-      console.warn("getHojeId Intl fallback falhou:", err);
-    }
-    // fallback manual
+    } catch (err) {}
     const agora = new Date();
-    const ano = agora.getFullYear();
-    const mes = String(agora.getMonth() + 1).padStart(2, "0");
-    const dia = String(agora.getDate()).padStart(2, "0");
-    return `${ano}-${mes}-${dia}`;
+    return `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, "0")}-${String(
+      agora.getDate()
+    ).padStart(2, "0")}`;
   };
 
-  // Função para obter hora atual formatada no fuso de SP (HH:MM)
   const getHoraAtualLocal = () => {
     try {
       const hora = new Intl.DateTimeFormat("pt-BR", {
@@ -183,11 +155,9 @@ export default function FuncionarioPerfil() {
         hour12: false,
         timeZone: BRAZIL_TZ,
       }).format(new Date());
-      // o resultado vem como "09:05" ou "9:05" dependendo da localidade; força HH:MM
       const parts = hora.split(":").map((s) => s.padStart(2, "0"));
       return `${parts[0]}:${parts[1]}`;
-    } catch (err) {
-      // fallback simples
+    } catch {
       const agora = new Date();
       return agora.toTimeString().split(":").slice(0, 2).join(":");
     }
@@ -195,109 +165,51 @@ export default function FuncionarioPerfil() {
 
   const verificarFolgaAutomatica = async () => {
     try {
-      // pega hora local de SP para decidir >=16
       const agoraSP = new Date(new Date().toLocaleString("en-US", { timeZone: BRAZIL_TZ }));
       if (agoraSP.getHours() < 16) return;
       const hoje = getHojeId();
-      console.log("🔹 verificarFolgaAutomatica -> hoje:", hoje);
-
-      const docRef = doc(
-        db,
-        "lojas",
-        lojaId,
-        "funcionarios",
-        funcionarioId,
-        "pontos",
-        hoje
-      );
-
-      // tenta buscar do servidor primeiro pra evitar cache antigo
+      const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", hoje);
       let snap;
       try {
         snap = await getDoc(docRef, { source: "server" });
-      } catch (err) {
-        // se não suportar source, cai no getDoc normal
-        console.warn("getDoc(source: 'server') falhou, usando getDoc normal:", err);
+      } catch {
         snap = await getDoc(docRef);
       }
-
       if (!snap.exists()) {
         await setDoc(docRef, { data: hoje, status: "FOLGA", criadoEm: serverTimestamp() });
-        // recarrega pontos para UI
         await carregarPontos();
-        console.log("✅ Folga automática criada para", hoje, "->", `loja:${lojaId} func:${funcionarioId}`);
-      } else {
-        console.log("⏭️ Já existe documento de ponto para", hoje);
       }
     } catch (err) {
       console.error("Erro verificarFolgaAutomatica:", err);
     }
   };
 
-  // --- Função que grava horário (entrada/intervalo/volta/saida) ---
   const onVerifyPunchSuccess = async () => {
     try {
       const hoje = getHojeId();
-      console.log("🕒 onVerifyPunchSuccess -> hoje:", hoje);
-
-      const docRef = doc(
-        db,
-        "lojas",
-        lojaId,
-        "funcionarios",
-        funcionarioId,
-        "pontos",
-        hoje
-      );
-
-      console.log("🧭 onVerifyPunchSuccess -> docRef path:", docRef.path);
-
-      // tenta ler diretamente do servidor para evitar cache desatualizado
+      const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", hoje);
       let snap;
       try {
         snap = await getDoc(docRef, { source: "server" });
-      } catch (err) {
-        // se a opção não for suportada, cai para getDoc normal
-        console.warn("getDoc(source: 'server') falhou, usando getDoc normal:", err);
+      } catch {
         snap = await getDoc(docRef);
       }
 
       const horaAtual = getHoraAtualLocal();
-
       let dados = snap.exists() ? { ...snap.data() } : { data: hoje, status: "OK" };
-
-      // CONFERÊNCIA: calculamos quantos pontos já existem **nesse documento** (dia atual)
       const pontosHoje = [
         dados.entrada,
         dados.intervaloSaida,
         dados.intervaloVolta,
         dados.saida,
       ].filter(Boolean).length;
-
-      console.log("🔎 pontosHoje:", pontosHoje, "dados:", dados);
-
-      if (pontosHoje >= 4) {
-        alert(`⚠️ Todos os pontos do dia já foram marcados (para ${hoje}).`);
-        return;
-      }
-
-      // preenche próximo espaço disponível
+      if (pontosHoje >= 4) return alert("⚠️ Todos os pontos do dia já foram marcados.");
       if (!dados.entrada) dados.entrada = horaAtual;
       else if (!dados.intervaloSaida) dados.intervaloSaida = horaAtual;
       else if (!dados.intervaloVolta) dados.intervaloVolta = horaAtual;
       else if (!dados.saida) dados.saida = horaAtual;
-
-      // salva no Firestore
       await setDoc(docRef, dados, { merge: true });
-      console.log("✅ Ponto salvo em:", hoje, dados);
-
-      // pequeno delay pra permitir a propagação (normalmente não é necessário,
-      // mas evita mostrar UI desatualizada em alguns casos)
-      await new Promise((resolve) => setTimeout(resolve, 700));
-
-      // recarrega a lista de pontos DO SERVIDOR
       await carregarPontos();
-
       alert("✅ Ponto registrado com sucesso!");
       setMode("view");
     } catch (err) {
@@ -306,147 +218,95 @@ export default function FuncionarioPerfil() {
     }
   };
 
-  // Implementação local de verificação facial usando utilitários existentes
-  // blob/dataUrl -> cria imagem -> get descriptor -> compara com armazenado em funcData.faceDescriptor
   const verifyLiveAgainstReference = async (blob, dataUrl, onSuccess, onFail) => {
     try {
       const img = await createImageElementFromDataUrl(dataUrl);
       const liveDesc = await getFaceDescriptorFromMedia(img);
       if (!liveDesc) return onFail("Rosto não detectado.");
-
       const storedArr = funcData?.faceDescriptor || null;
       if (!storedArr) return onFail("Sem foto cadastrada.");
-
       const storedDesc = arrayToDescriptor(storedArr);
-      const { match, distance } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
-
-      console.debug("compareDescriptors =>", { match, distance });
-      if (match) {
-        // grava ponto
-        await onSuccess();
-      } else onFail("Rosto não confere.");
-    } catch (err) {
-      console.error("Erro verifyLiveAgainstReference:", err);
+      const { match } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
+      if (match) await onSuccess();
+      else onFail("Rosto não confere.");
+    } catch {
       onFail("Erro na verificação facial.");
     }
   };
 
-  // Botão principal: admin bate direto, não-admin abre modo verify
   const requestPunchWithFace = async () => {
-    if (isAdmin) {
-      console.log("🟡 ADMIN ignorando reconhecimento facial — batendo ponto diretamente");
-      return onVerifyPunchSuccess();
-    }
-
-    if (!funcData?.faceDescriptor) {
-      alert("⚠️ Nenhuma foto de referência cadastrada!");
-      return;
-    }
-
+    if (isAdmin) return onVerifyPunchSuccess();
+    if (!funcData?.faceDescriptor) return alert("⚠️ Nenhuma foto de referência cadastrada!");
     setMode("verify-punch");
   };
 
-  // Upload de atestado (separado — não deve acionar lógica de bater ponto)
   const handleUploadAtestado = async (dayId, file) => {
     if (!file) return;
     try {
       setUploadingAtestado(true);
       const url = await uploadImage(file);
-      await updateDoc(
-        doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId),
-        {
-          atestadoUrl: url,
-          atestadoUploadedAt: serverTimestamp(),
-        }
-      );
+      await updateDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId), {
+        atestadoUrl: url,
+        atestadoUploadedAt: serverTimestamp(),
+      });
       await carregarPontos();
       alert("📄 Atestado enviado com sucesso!");
-    } catch (err) {
-      console.error("Erro handleUploadAtestado:", err);
+    } catch {
       alert("Erro ao enviar atestado.");
     } finally {
       setUploadingAtestado(false);
     }
   };
 
-  // --- NOVA FUNÇÃO: excluir ponto por dia (visível somente ao admin) ---
   const handleExcluirPonto = async (dayId) => {
     if (!isAdmin) return alert("Somente o administrador pode excluir pontos.");
-    if (!window.confirm("Tem certeza que deseja excluir este dia e todos os dados associados?")) return;
+    if (!window.confirm("Excluir este dia e todos os dados associados?")) return;
     try {
       await deleteDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId));
       await carregarPontos();
       alert("🗑️ Ponto excluído com sucesso!");
-    } catch (err) {
-      console.error("Erro handleExcluirPonto:", err);
+    } catch {
       alert("Erro ao excluir ponto.");
     }
   };
-  // --- fim da função de exclusão ---
 
-  // Helpers horas
   const toMinutes = (t) => {
     if (!t) return null;
-    const parts = t.split(":").map((x) => Number(x));
-    if (
-      parts.length < 2 ||
-      Number.isNaN(parts[0]) ||
-      Number.isNaN(parts[1])
-    )
-      return null;
-    return parts[0] * 60 + parts[1];
+    const [h, m] = t.split(":").map(Number);
+    return h * 60 + m;
   };
 
   const calcMinutesWorkedForDay = (p) => {
-    const e = toMinutes(p.entrada);
-    const isOut = toMinutes(p.intervaloSaida);
-    const iv = toMinutes(p.intervaloVolta);
-    const s = toMinutes(p.saida);
-
+    const e = toMinutes(p.entrada),
+      isOut = toMinutes(p.intervaloSaida),
+      iv = toMinutes(p.intervaloVolta),
+      s = toMinutes(p.saida);
     let total = 0;
-    if (e != null && isOut != null && isOut > e) total += Math.max(0, isOut - e);
-    if (
-      (iv == null || s == null) &&
-      e != null &&
-      s != null &&
-      s > e &&
-      (isOut == null || iv == null)
-    ) {
-      total = Math.max(0, s - e);
-    } else {
-      if (iv != null && s != null && s > iv) total += Math.max(0, s - iv);
-    }
+    if (e && isOut && isOut > e) total += isOut - e;
+    if (iv && s && s > iv) total += s - iv;
     return total;
   };
 
   const minutesToHHMM = (mins) => {
-    if (mins == null || Number.isNaN(mins)) return "0h 0m";
     const h = Math.floor(mins / 60);
     const m = Math.round(mins % 60);
     return `${h}h ${m}m`;
   };
 
-  // Agrupa por mês
   const groupByMonth = (pontosList) => {
     const map = new Map();
     pontosList.forEach((p) => {
-      // IMPORTANT: use 'T00:00:00' so JS interprets date as local midnight (no UTC shift)
       const date = new Date(p.id + "T00:00:00");
-      if (isNaN(date)) return;
-      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-      const monthLabel = new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(date);
-
-      if (!map.has(monthKey)) map.set(monthKey, { label: monthLabel, days: [], totalMinutes: 0 });
-      const entry = map.get(monthKey);
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+      const label = new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(date);
+      if (!map.has(key)) map.set(key, { label, days: [], totalMinutes: 0 });
+      const entry = map.get(key);
       entry.days.push(p);
-      const mins = calcMinutesWorkedForDay(p);
-      entry.totalMinutes += mins || 0;
+      entry.totalMinutes += calcMinutesWorkedForDay(p);
     });
-
-    const arr = Array.from(map.entries())
+    return Array.from(map.entries())
       .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-      .map(([key, value]) => ({ monthKey: key, ...value }));
-    return arr;
+      .map(([monthKey, v]) => ({ monthKey, ...v }));
   };
 
   if (carregando)
@@ -469,9 +329,8 @@ export default function FuncionarioPerfil() {
   const currentMonthKey = `${nowSP.getFullYear()}-${String(nowSP.getMonth() + 1).padStart(2, "0")}`;
 
   return (
-    <Container sx={{ bgcolor: "#121212", minHeight: "100vh", py: 4, color: "white", position: "relative" }}>
-      {/* Marca d’água fixa no topo */}
-      <Box sx={{ position: "fixed", top: 8, right: 16, color: "rgba(255,255,255,0.2)", fontSize: 12, zIndex: 9999 }}>
+    <Container sx={{ bgcolor: "#121212", minHeight: "100vh", py: 4, color: "white" }}>
+      <Box sx={{ position: "fixed", top: 8, right: 16, color: "rgba(255,255,255,0.2)", fontSize: 12 }}>
         Versão 1.0 - Criado por Zambiazi
       </Box>
 
@@ -484,24 +343,38 @@ export default function FuncionarioPerfil() {
         >
           Voltar
         </Button>
-
-        <Box display="flex" alignItems="center" gap={2} sx={{ flexGrow: 1, justifyContent: "center" }}>
-          <img src="/logo.jpg" alt="Logo" style={{ width: 52, height: 52, borderRadius: "50%", objectFit: "cover" }} />
-          <Typography variant="h5" sx={{ color: "#fff", fontWeight: "bold" }}>{lojaNome || "Loja"}</Typography>
+        <Box display="flex" alignItems="center" gap={2}>
+          <img src="/logo.jpg" alt="Logo" style={{ width: 52, height: 52, borderRadius: "50%" }} />
+          <Typography variant="h5" sx={{ color: "#fff", fontWeight: "bold" }}>
+            {lojaNome || "Loja"}
+          </Typography>
         </Box>
       </Stack>
 
       <Paper sx={{ p: 3, bgcolor: "#1e1e1e", borderRadius: 3 }}>
         <Box textAlign="center" mb={3}>
-          <Avatar
-            src={funcData?.fotoReferencia || ""}
-            sx={{ width: 100, height: 100, margin: "0 auto", mb: 1 }}
-          />
-          <Typography variant="h6" sx={{ color: "#fff" }}>{funcData?.nome}</Typography>
-          <Typography variant="body2" sx={{ color: "#bdbdbd", mb: 1 }}>Foto de referência</Typography>
+          {funcData?.fotoReferencia ? (
+            <>
+              <Avatar src={funcData.fotoReferencia} sx={{ width: 100, height: 100, margin: "0 auto" }} />
+              <Typography color="green">✅ Foto cadastrada!</Typography>
+            </>
+          ) : Array.isArray(funcData?.faceDescriptor) && funcData.faceDescriptor.length > 0 ? (
+            <Typography color="green">✅ Foto cadastrada (sem imagem)</Typography>
+          ) : (
+            <Typography color="red">⚠️ Nenhuma foto cadastrada.</Typography>
+          )}
 
+          <Typography variant="h6" sx={{ color: "#fff" }}>
+            {funcData?.nome}
+          </Typography>
           {isAdmin && (
-            <Button variant="contained" color="warning" startIcon={<AddAPhotoIcon />} sx={{ mt: 2 }} onClick={() => setMode("enroll")}>
+            <Button
+              variant="contained"
+              color="warning"
+              startIcon={<AddAPhotoIcon />}
+              sx={{ mt: 2 }}
+              onClick={() => setMode("enroll")}
+            >
               Atualizar Foto
             </Button>
           )}
