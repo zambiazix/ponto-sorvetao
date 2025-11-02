@@ -407,18 +407,43 @@ export default function FuncionarioPerfil() {
         )}
 
         {mode === "verify-punch" && (
-          <Paper sx={{ p: 2, bgcolor: "#2a2a2a", borderRadius: 2, textAlign: "center" }}>
-            <Typography mb={1} sx={{ color: "#fff" }}>Posicione o rosto e clique para verificar</Typography>
-            <WebcamCapture
-              captureLabel="Capturar e Verificar"
-              onCapture={async (blob, dataUrl) => {
-                await verifyLiveAgainstReference(blob, dataUrl, onVerifyPunchSuccess, (r) => alert(r));
-              }}
-              facingMode="user"
-            />
-            <Button startIcon={<CancelIcon />} variant="outlined" color="inherit" sx={{ mt: 2 }} onClick={() => setMode("view")}>Cancelar</Button>
-          </Paper>
-        )}
+  <Paper sx={{ p: 2, bgcolor: "#2a2a2a", borderRadius: 2, textAlign: "center" }}>
+    <Typography mb={1} sx={{ color: "#fff" }}>
+      Posicione o rosto — a verificação será feita automaticamente
+    </Typography>
+
+    <WebcamCapture
+      autoCapture={true}
+      onFrame={async (blob, dataUrl) => {
+        try {
+          const img = await createImageElementFromDataUrl(dataUrl);
+          const liveDesc = await getFaceDescriptorFromMedia(img);
+          if (!liveDesc) return;
+          const storedArr = funcData?.faceDescriptor || null;
+          if (!storedArr) return;
+          const storedDesc = arrayToDescriptor(storedArr);
+          const { match } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
+          if (match) {
+            await onVerifyPunchSuccess();
+          }
+        } catch (err) {
+          console.warn("Erro durante verificação automática:", err);
+        }
+      }}
+      facingMode="user"
+    />
+
+    <Button
+      startIcon={<CancelIcon />}
+      variant="outlined"
+      color="inherit"
+      sx={{ mt: 2 }}
+      onClick={() => setMode("view")}
+    >
+      Cancelar
+    </Button>
+  </Paper>
+)}
 
         {mode === "view" && (
           <Box textAlign="center" mt={2}>
