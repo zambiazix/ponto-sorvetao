@@ -16,6 +16,7 @@
     "@mui/material": "^7.3.4",
     "@simplewebauthn/browser": "^13.2.2",
     "@simplewebauthn/server": "^13.2.2",
+    "@vladmandic/face-api": "^1.7.15",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "express": "^5.1.0",
