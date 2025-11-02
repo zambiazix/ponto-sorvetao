@@ -68,6 +68,9 @@ export default function FuncionarioPerfil() {
   const [carregando, setCarregando] = useState(true);
   const [uploadingAtestado, setUploadingAtestado] = useState(false);
 
+  // novo estado para evitar chamadas duplicadas durante verificação automática
+  const [verificando, setVerificando] = useState(false);
+
   const statusList = ["OK", "FALTA", "ATESTADO", "FÉRIAS", "SUSPENSÃO", "DISPENSA", "FOLGA"];
 
   const statusEmojis = {
@@ -99,6 +102,7 @@ export default function FuncionarioPerfil() {
       await carregarPontos();
       await verificarFolgaAutomatica();
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lojaId, funcionarioId]);
 
   const carregarLoja = async () => {
@@ -400,20 +404,55 @@ export default function FuncionarioPerfil() {
               hideControls
               facingMode="user"
               onFrame={async (blob, dataUrl) => {
+                // Proteção: se já estivermos verificando, ignora frames adicionais
+                if (verificando) {
+                  // console.log("Já verificando, ignorando frame.");
+                  return false;
+                }
+
                 try {
+                  // transforma dataUrl em img
                   const img = await createImageElementFromDataUrl(dataUrl);
+                  if (!img) {
+                    console.log("❌ createImageElementFromDataUrl retornou null.");
+                    return false;
+                  }
+
                   const liveDesc = await getFaceDescriptorFromMedia(img);
-                  if (!liveDesc) return;
+                  if (!liveDesc) {
+                    console.log("❌ Nenhum rosto detectado neste frame.");
+                    return false;
+                  }
+
                   const storedArr = funcData?.faceDescriptor || null;
-                  if (!storedArr) return;
+                  if (!storedArr) {
+                    console.log("⚠️ Funcionário sem faceDescriptor cadastrado.");
+                    return false;
+                  }
+
                   const storedDesc = arrayToDescriptor(storedArr);
-                  const { match } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
+                  const { match, distance } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
+                  console.log("Comparação facial -> match:", match, "dist:", typeof distance === "number" ? distance.toFixed(3) : distance);
+
                   if (match) {
-  await onVerifyPunchSuccess();
-  return true; // <--- sinaliza ao WebcamCapture para parar o loop automático
-}
+                    try {
+                      // Evita reentrância
+                      setVerificando(true);
+                      console.log("✅ Rosto reconhecido — chamando onVerifyPunchSuccess()");
+                      await onVerifyPunchSuccess();
+                      // retornando true sinalizamos ao componente de webcam que deu match
+                      return true;
+                    } finally {
+                      // deixa como false só depois de pequena espera para evitar loops rápidos
+                      setTimeout(() => setVerificando(false), 500);
+                    }
+                  }
+
+                  // não houve match; continuar tentando
+                  return false;
                 } catch (err) {
                   console.warn("Erro durante verificação automática:", err);
+                  return false;
                 }
               }}
             />
