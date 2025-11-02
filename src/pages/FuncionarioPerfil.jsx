@@ -63,7 +63,7 @@ export default function FuncionarioPerfil() {
   const [funcData, setFuncData] = useState(null);
   const [pontos, setPontos] = useState([]);
   const [lojaNome, setLojaNome] = useState("");
-  const [mode, setMode] = useState("view"); // view | enroll | verify-punch
+  const [mode, setMode] = useState("view");
   const [isAdmin, setIsAdmin] = useState(false);
   const [carregando, setCarregando] = useState(true);
   const [uploadingAtestado, setUploadingAtestado] = useState(false);
@@ -215,22 +215,6 @@ export default function FuncionarioPerfil() {
     } catch (err) {
       console.error("❌ Erro onVerifyPunchSuccess:", err);
       alert("Erro ao registrar ponto.");
-    }
-  };
-
-  const verifyLiveAgainstReference = async (blob, dataUrl, onSuccess, onFail) => {
-    try {
-      const img = await createImageElementFromDataUrl(dataUrl);
-      const liveDesc = await getFaceDescriptorFromMedia(img);
-      if (!liveDesc) return onFail("Rosto não detectado.");
-      const storedArr = funcData?.faceDescriptor || null;
-      if (!storedArr) return onFail("Sem foto cadastrada.");
-      const storedDesc = arrayToDescriptor(storedArr);
-      const { match } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
-      if (match) await onSuccess();
-      else onFail("Rosto não confere.");
-    } catch {
-      onFail("Erro na verificação facial.");
     }
   };
 
@@ -407,47 +391,50 @@ export default function FuncionarioPerfil() {
         )}
 
         {mode === "verify-punch" && (
-  <Paper sx={{ p: 2, bgcolor: "#2a2a2a", borderRadius: 2, textAlign: "center" }}>
-    <Typography mb={1} sx={{ color: "#fff" }}>
-      Posicione o rosto — a verificação será feita automaticamente
-    </Typography>
-
-    <WebcamCapture
-      autoCapture={true}
-      onFrame={async (blob, dataUrl) => {
-        try {
-          const img = await createImageElementFromDataUrl(dataUrl);
-          const liveDesc = await getFaceDescriptorFromMedia(img);
-          if (!liveDesc) return;
-          const storedArr = funcData?.faceDescriptor || null;
-          if (!storedArr) return;
-          const storedDesc = arrayToDescriptor(storedArr);
-          const { match } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
-          if (match) {
-            await onVerifyPunchSuccess();
-          }
-        } catch (err) {
-          console.warn("Erro durante verificação automática:", err);
-        }
-      }}
-      facingMode="user"
-    />
-
-    <Button
-      startIcon={<CancelIcon />}
-      variant="outlined"
-      color="inherit"
-      sx={{ mt: 2 }}
-      onClick={() => setMode("view")}
-    >
-      Cancelar
-    </Button>
-  </Paper>
-)}
+          <Paper sx={{ p: 2, bgcolor: "#2a2a2a", borderRadius: 2, textAlign: "center" }}>
+            <Typography mb={1} sx={{ color: "#fff" }}>
+              Posicione o rosto — a verificação será feita automaticamente
+            </Typography>
+            <WebcamCapture
+              autoCapture
+              hideControls
+              facingMode="user"
+              onFrame={async (blob, dataUrl) => {
+                try {
+                  const img = await createImageElementFromDataUrl(dataUrl);
+                  const liveDesc = await getFaceDescriptorFromMedia(img);
+                  if (!liveDesc) return;
+                  const storedArr = funcData?.faceDescriptor || null;
+                  if (!storedArr) return;
+                  const storedDesc = arrayToDescriptor(storedArr);
+                  const { match } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
+                  if (match) await onVerifyPunchSuccess();
+                } catch (err) {
+                  console.warn("Erro durante verificação automática:", err);
+                }
+              }}
+            />
+            <Button
+              startIcon={<CancelIcon />}
+              variant="outlined"
+              color="inherit"
+              sx={{ mt: 2 }}
+              onClick={() => setMode("view")}
+            >
+              Cancelar
+            </Button>
+          </Paper>
+        )}
 
         {mode === "view" && (
           <Box textAlign="center" mt={2}>
-            <Button variant="contained" color="success" startIcon={<CameraAltIcon />} onClick={requestPunchWithFace} fullWidth>
+            <Button
+              variant="contained"
+              color="success"
+              startIcon={<CameraAltIcon />}
+              onClick={requestPunchWithFace}
+              fullWidth
+            >
               Bater Ponto
             </Button>
           </Box>
@@ -455,136 +442,78 @@ export default function FuncionarioPerfil() {
 
         <Divider sx={{ my: 3, bgcolor: "#333" }} />
 
-        <Typography variant="h6" mb={2} sx={{ color: "#fff", display: "flex", alignItems: "center", gap: 1 }}>🕓 Histórico de Pontos</Typography>
+        <Typography variant="h6" mb={2} sx={{ color: "#fff", display: "flex", alignItems: "center", gap: 1 }}>
+          Histórico de Pontos
+        </Typography>
 
-        {months.length === 0 ? (
-          <Typography color="gray" align="center">Nenhum ponto registrado ainda.</Typography>
-        ) : (
-          months.map((month) => {
-            const isCurrent = month.monthKey === currentMonthKey;
-            return (
-              <Accordion key={month.monthKey} defaultExpanded={isCurrent} sx={{ bgcolor: "#1c1c1c", color: "white", mb: 2 }}>
-                {/* Força cor branca no summary e no conteúdo do summary (evita overlay do MUI escurecer o texto) */}
-                <AccordionSummary
-                  expandIcon={<ExpandMoreIcon sx={{ color: "white" }} />}
-                  sx={{
-                    color: "#fff !important",
-                    // garante que o conteúdo e tipografia filhos fiquem brancos
-                    "& .MuiAccordionSummary-content": { color: "#fff !important" },
-                    "& .MuiTypography-root": { color: "#fff !important" },
-                  }}
-                >
-                  <Box display="flex" alignItems="center" justifyContent="space-between" width="100%">
-                    <Box display="flex" alignItems="center" gap={2}>
-                      <Typography
-                        sx={{
-                          fontWeight: "bold",
-                          textTransform: "capitalize",
-                          color: "#fff !important",
-                        }}
-                      >
-                        {month.label}
+        {months.map((month) => (
+          <Accordion key={month.monthKey} defaultExpanded={month.monthKey === currentMonthKey} sx={{ bgcolor: "#1a1a1a", color: "white", mb: 1 }}>
+            <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: "#fff" }} />}>
+              <Typography sx={{ textTransform: "capitalize" }}>
+                {month.label} — ⏱️ {minutesToHHMM(month.totalMinutes)}
+              </Typography>
+            </AccordionSummary>
+            <AccordionDetails>
+              <Grid container spacing={1}>
+                {month.days.map((p) => (
+                  <Grid item xs={12} key={p.id}>
+                    <Paper sx={{ p: 1.5, bgcolor: "#252525", borderRadius: 2 }}>
+                      <Stack direction="row" justifyContent="space-between" alignItems="center">
+                        <Typography sx={{ color: "#fff" }}>{p.id}</Typography>
+                        <Chip
+                          label={`${statusEmojis[p.status] || "❔"} ${p.status}`}
+                          size="small"
+                          sx={{
+                            bgcolor: "#333",
+                            color: "white",
+                            fontWeight: "bold",
+                          }}
+                        />
+                      </Stack>
+                      <Typography variant="body2" color="#bbb" sx={{ mt: 1 }}>
+                        Entrada: {p.entrada || "-"} | Saída Intervalo: {p.intervaloSaida || "-"} | Volta:{" "}
+                        {p.intervaloVolta || "-"} | Saída: {p.saida || "-"}
                       </Typography>
-                      {/* Forçar chip de total do mês com texto branco para contraste */}
-                      <Chip label={minutesToHHMM(month.totalMinutes)} size="small" sx={{ bgcolor: "#333", color: "#fff" }} />
-                    </Box>
-                    <Typography variant="body2" color="gray">{month.days.length} dia(s)</Typography>
-                  </Box>
-                </AccordionSummary>
-                <AccordionDetails sx={{ bgcolor: "#222" }}>
-                  {month.days.map((p) => (
-                    <Paper key={p.id} sx={{ bgcolor: "#2a2a2a", p: 2, mb: 2, borderRadius: 2, overflowX: "auto" }}>
-                      <Grid container spacing={1} alignItems="center">
-                        <Grid item xs={12} md={2}>
-                          {/* use 'T00:00:00' to avoid UTC shift when creating Date for display */}
-                          <Typography color="#fff">{new Date(p.id + "T00:00:00").toLocaleDateString("pt-BR")}</Typography>
-                          {p.atestadoUrl && (
-                            <Box mt={1}>
-                              <a href={p.atestadoUrl} target="_blank" rel="noreferrer">
-                                <img src={p.atestadoUrl} alt="atestado" style={{ width: 48, height: 48, objectFit: "cover", borderRadius: 6 }} />
-                              </a>
-                            </Box>
-                          )}
-                        </Grid>
-
-                        {["entrada", "intervaloSaida", "intervaloVolta", "saida"].map((campo, idx) => (
-                          <Grid item xs={6} md={2} key={campo}>
-                            <TextField
-                              size="small"
-                              fullWidth
-                              label={["⏰ Entrada","⏰ Saída Int.","⏰ Volta Int.","⏰ Saída"][idx]}
-                              value={p[campo] || ""}
-                              onChange={(e) => isAdmin && updateDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", p.id), { [campo]: e.target.value }).then(carregarPontos)}
-                              disabled={!isAdmin}
-                              type="time"
-                              InputLabelProps={{ shrink: true, style: { color: "#fff" } }}
-                              sx={{ input: { color: "white" }, "& .MuiFormLabel-root": { color: "#fff" } }}
-                            />
-                          </Grid>
-                        ))}
-
-                        <Grid item xs={12} md={2} sx={{ display: "flex", gap: 1, alignItems: "center" }}>
-                          <TextField
-                            select
-                            fullWidth
-                            size="small"
-                            label="Status"
-                            value={p.status || "OK"}
-                            onChange={(e) => isAdmin && updateDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", p.id), { status: e.target.value }).then(carregarPontos)}
-                            disabled={!isAdmin}
-                            sx={{ "& .MuiSelect-select": { color: "white" }, label: { color: "gray" } }}
-                            InputLabelProps={{ style: { color: "#bbb" } }}
-                          >
-                            {statusList.map((s) => <MenuItem key={s} value={s}>{statusEmojis[s]} {s}</MenuItem>)}
-                          </TextField>
-
-                          {p.status === "ATESTADO" && (
-                            <Box>
-                              <input
-                                accept="image/*"
-                                style={{ display: "none" }}
-                                id={`atestado-input-${p.id}`}
-                                type="file"
-                                capture="environment"
-                                onChange={(ev) => {
-                                  const file = ev.target.files?.[0];
-                                  if (file) handleUploadAtestado(p.id, file);
-                                  ev.target.value = null;
-                                }}
-                              />
-                              <label htmlFor={`atestado-input-${p.id}`}>
-                                <IconButton color="primary" component="span" size="small" title="Enviar atestado / tirar foto">
-                                  <PhotoCamera />
-                                </IconButton>
-                              </label>
-                            </Box>
-                          )}
-                        </Grid>
-                      </Grid>
-
-                      <Box mt={1} display="flex" justifyContent="flex-end" alignItems="center" gap={1}>
-                        <Typography variant="body2" sx={{ color: "#ccc" }}>Total do dia:</Typography>
-                        <Chip label={minutesToHHMM(calcMinutesWorkedForDay(p))} sx={{ bgcolor: "#333", color: "#fff" }} />
-                        {p.atestadoUrl && <Typography variant="body2" color="inherit" sx={{ ml: 1 }}>📎 Atestado enviado</Typography>}
-                        {/* Botão excluir mostrado somente ao admin */}
+                      <Typography variant="body2" color="#999" sx={{ mt: 0.5 }}>
+                        ⏰ Total: {minutesToHHMM(calcMinutesWorkedForDay(p))}
+                      </Typography>
+                      {p.atestadoUrl && (
+                        <Box mt={1}>
+                          <a href={p.atestadoUrl} target="_blank" rel="noopener noreferrer">
+                            📎 Ver Atestado
+                          </a>
+                        </Box>
+                      )}
+                      <Stack direction="row" spacing={1} mt={1}>
+                        <Button
+                          variant="outlined"
+                          color="info"
+                          component="label"
+                          size="small"
+                          startIcon={<PhotoCamera />}
+                        >
+                          Enviar Atestado
+                          <input
+                            hidden
+                            type="file"
+                            accept="image/*,application/pdf"
+                            onChange={(e) => handleUploadAtestado(p.id, e.target.files[0])}
+                          />
+                        </Button>
                         {isAdmin && (
-                          <IconButton color="error" size="small" onClick={() => handleExcluirPonto(p.id)} title="Excluir dia">
+                          <IconButton color="error" onClick={() => handleExcluirPonto(p.id)}>
                             <DeleteForeverIcon />
                           </IconButton>
                         )}
-                      </Box>
+                      </Stack>
                     </Paper>
-                  ))}
-                </AccordionDetails>
-              </Accordion>
-            );
-          })
-        )}
+                  </Grid>
+                ))}
+              </Grid>
+            </AccordionDetails>
+          </Accordion>
+        ))}
       </Paper>
-
-      <Box textAlign="center" mt={4}>
-        <Button variant="contained" color="error" startIcon={<ExitToAppIcon />} onClick={() => navigate("/")}>Sair</Button>
-      </Box>
     </Container>
   );
 }

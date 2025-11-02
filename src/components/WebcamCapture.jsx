@@ -13,6 +13,7 @@ import Webcam from "react-webcam";
  *  - autoCapture (bool)                 -> se true, captura frames automaticamente
  *  - onFrame (async fn(blob, dataUrl))  -> chamado a cada frame capturado quando autoCapture=true
  *  - frameInterval (number ms)          -> intervalo entre frames em autoCapture (padrão 900 ms)
+ *  - hideControls (bool)                -> se true, oculta botões de controle (para uso automático)
  */
 export default function WebcamCapture({
   onCapture,
@@ -22,6 +23,7 @@ export default function WebcamCapture({
   autoCapture = false,
   onFrame,
   frameInterval = 900,
+  hideControls = false,
 }) {
   const webcamRef = useRef(null);
   const [playing, setPlaying] = useState(true);
@@ -52,7 +54,6 @@ export default function WebcamCapture({
         if (onCapture) await onCapture(res.blob, res.dataUrl);
       } catch (err) {
         console.error("Erro ao capturar:", err);
-        // mensagem amigável
         alert("Erro ao capturar imagem: " + (err.message || err));
       } finally {
         setLoading(false);
@@ -63,7 +64,6 @@ export default function WebcamCapture({
 
   // rotina automática que chama onFrame repetidamente
   useEffect(() => {
-    // limpa existente
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
@@ -74,14 +74,11 @@ export default function WebcamCapture({
         try {
           const res = await takeScreenshot();
           if (!res) return;
-          // chama onFrame; se retornar true (ou uma Promise que resolve true), considera que deu match
-          // (a lógica de resposta pertence ao caller - aqui só entregamos o frame)
           await onFrame(res.blob, res.dataUrl);
         } catch (err) {
-          // não interromper o loop se onFrame falhar
           console.warn("Erro em onFrame:", err);
         }
-      }, Math.max(150, frameInterval)); // intervalo mínimo para não saturar
+      }, Math.max(150, frameInterval));
     }
 
     return () => {
@@ -94,7 +91,15 @@ export default function WebcamCapture({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-      <div style={{ width: "100%", maxWidth: 720, background: "#111", borderRadius: 6, overflow: "hidden" }}>
+      <div
+        style={{
+          width: "100%",
+          maxWidth: 720,
+          background: "#111",
+          borderRadius: 6,
+          overflow: "hidden",
+        }}
+      >
         <Webcam
           audio={false}
           ref={webcamRef}
@@ -105,38 +110,40 @@ export default function WebcamCapture({
         />
       </div>
 
-      <div style={{ display: "flex", gap: 8 }}>
-        <button
-          onClick={() => setPlaying((p) => !p)}
-          style={{
-            background: "#6b7280",
-            color: "white",
-            padding: "8px 12px",
-            borderRadius: 6,
-            border: "none",
-            cursor: "pointer",
-          }}
-          title={playing ? "Pausar" : "Retomar"}
-        >
-          {playing ? "Pausar" : "Retomar"}
-        </button>
+      {!hideControls && (
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={() => setPlaying((p) => !p)}
+            style={{
+              background: "#6b7280",
+              color: "white",
+              padding: "8px 12px",
+              borderRadius: 6,
+              border: "none",
+              cursor: "pointer",
+            }}
+            title={playing ? "Pausar" : "Retomar"}
+          >
+            {playing ? "Pausar" : "Retomar"}
+          </button>
 
-        <button
-          onClick={handleCapture}
-          disabled={loading}
-          style={{
-            background: "#10b981",
-            color: "white",
-            padding: "8px 14px",
-            borderRadius: 6,
-            border: "none",
-            cursor: loading ? "wait" : "pointer",
-          }}
-          title={captureLabel}
-        >
-          {loading ? "Capturando..." : captureLabel}
-        </button>
-      </div>
+          <button
+            onClick={handleCapture}
+            disabled={loading}
+            style={{
+              background: "#10b981",
+              color: "white",
+              padding: "8px 14px",
+              borderRadius: 6,
+              border: "none",
+              cursor: loading ? "wait" : "pointer",
+            }}
+            title={captureLabel}
+          >
+            {loading ? "Capturando..." : captureLabel}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
