@@ -39,6 +39,27 @@ export default function Painel() {
   const [carregando, setCarregando] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
   const [nomeLoja, setNomeLoja] = useState("");
+  const [modelosCarregados, setModelosCarregados] = useState(false);
+
+  // ✅ Carrega os modelos uma única vez no início
+  useEffect(() => {
+    const loadModels = async () => {
+      try {
+        const MODEL_URL = "/models";
+        await Promise.all([
+          faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+        ]);
+        console.log("✅ Modelos de face-api carregados com sucesso!");
+        setModelosCarregados(true);
+      } catch (error) {
+        console.error("❌ Erro ao carregar modelos:", error);
+      }
+    };
+
+    loadModels();
+  }, []);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
@@ -93,101 +114,99 @@ export default function Painel() {
     carregarFuncionarios();
   };
 
-  // 🧠 Reconhecimento facial no botão "Ver Perfil"
-  // 🧠 Função de reconhecimento facial no botão "Ver Perfil"
-const handleReconhecimentoFacial = async (funcId, nomeFuncionario) => {
-  const user = auth.currentUser;
-  if (user && user.uid === ADMIN_UID) {
-    navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
-    return;
-  }
-
-  try {
-    const funcRef = doc(db, "lojas", lojaId, "funcionarios", funcId);
-    const funcSnap = await getDoc(funcRef);
-    if (!funcSnap.exists()) {
-      alert("Funcionário não encontrado.");
-      return;
-    }
-
-    const funcData = funcSnap.data();
-
-    if (!funcData.fotoReferencia) {
-      alert("⚠️ Este funcionário ainda não possui imagem cadastrada para reconhecimento facial.");
-      return;
-    }
-
-    // 🧠 Carrega todos os modelos necessários
-    await Promise.all([
-      faceapi.nets.ssdMobilenetv1.loadFromUri("/models"),
-      faceapi.nets.faceLandmark68Net.loadFromUri("/models"),
-      faceapi.nets.faceRecognitionNet.loadFromUri("/models"),
-    ]);
-
-    const referenceImage = await faceapi.fetchImage(funcData.fotoReferencia);
-    const labeledDescriptor = await faceapi
-      .detectSingleFace(referenceImage)
-      .withFaceLandmarks()
-      .withFaceDescriptor();
-
-    if (!labeledDescriptor) {
-      alert("❌ Não foi possível processar a imagem de referência.");
-      return;
-    }
-
-    const faceMatcher = new faceapi.FaceMatcher(
-      new faceapi.LabeledFaceDescriptors(nomeFuncionario, [
-        labeledDescriptor.descriptor,
-      ])
-    );
-
-    // 🎥 Cria vídeo temporário
-    const video = document.createElement("video");
-    video.autoplay = true;
-    video.style.position = "fixed";
-    video.style.top = "50%";
-    video.style.left = "50%";
-    video.style.transform = "translate(-50%, -50%)";
-    video.style.zIndex = 9999;
-    video.style.border = "2px solid #fff";
-    video.style.borderRadius = "10px";
-    video.width = 400;
-    video.height = 300;
-    document.body.appendChild(video);
-
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-    video.srcObject = stream;
-
-    alert("📸 Olhe para a câmera por alguns segundos para verificação...");
-
-    await new Promise((res) => setTimeout(res, 4000));
-
-    const detection = await faceapi
-      .detectSingleFace(video, new faceapi.SsdMobilenetv1Options())
-      .withFaceLandmarks()
-      .withFaceDescriptor();
-
-    stream.getTracks().forEach((t) => t.stop());
-    video.remove();
-
-    if (!detection) {
-      alert("❌ Nenhum rosto detectado. Tente novamente.");
-      return;
-    }
-
-    const bestMatch = faceMatcher.findBestMatch(detection.descriptor);
-
-    if (bestMatch.label === nomeFuncionario && bestMatch.distance < 0.5) {
-      alert("✅ Rosto reconhecido com sucesso!");
+  // 🧠 Função de reconhecimento facial
+  const handleReconhecimentoFacial = async (funcId, nomeFuncionario) => {
+    const user = auth.currentUser;
+    if (user && user.uid === ADMIN_UID) {
       navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
-    } else {
-      alert("⚠️ Rosto não reconhecido. Acesso negado.");
+      return;
     }
-  } catch (err) {
-    console.error("Erro no reconhecimento facial:", err);
-    alert("Erro durante o reconhecimento facial.");
-  }
-};
+
+    // ✅ Verifica se os modelos já foram carregados
+    if (!modelosCarregados) {
+      alert("⚙️ Aguarde um momento, os modelos de reconhecimento ainda estão sendo carregados...");
+      return;
+    }
+
+    try {
+      const funcRef = doc(db, "lojas", lojaId, "funcionarios", funcId);
+      const funcSnap = await getDoc(funcRef);
+      if (!funcSnap.exists()) {
+        alert("Funcionário não encontrado.");
+        return;
+      }
+
+      const funcData = funcSnap.data();
+
+      if (!funcData.fotoReferencia) {
+        alert("⚠️ Este funcionário ainda não possui imagem cadastrada para reconhecimento facial.");
+        return;
+      }
+
+      const referenceImage = await faceapi.fetchImage(funcData.fotoReferencia);
+      const labeledDescriptor = await faceapi
+        .detectSingleFace(referenceImage)
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+
+      if (!labeledDescriptor) {
+        alert("❌ Não foi possível processar a imagem de referência.");
+        return;
+      }
+
+      const faceMatcher = new faceapi.FaceMatcher(
+        new faceapi.LabeledFaceDescriptors(nomeFuncionario, [
+          labeledDescriptor.descriptor,
+        ])
+      );
+
+      // 🎥 Cria vídeo temporário
+      const video = document.createElement("video");
+      video.autoplay = true;
+      video.style.position = "fixed";
+      video.style.top = "50%";
+      video.style.left = "50%";
+      video.style.transform = "translate(-50%, -50%)";
+      video.style.zIndex = 9999;
+      video.style.border = "2px solid #fff";
+      video.style.borderRadius = "10px";
+      video.width = 400;
+      video.height = 300;
+      document.body.appendChild(video);
+
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      video.srcObject = stream;
+
+      alert("📸 Olhe para a câmera por alguns segundos para verificação...");
+
+      await new Promise((res) => setTimeout(res, 4000));
+
+      const detection = await faceapi
+        .detectSingleFace(video, new faceapi.SsdMobilenetv1Options())
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+
+      stream.getTracks().forEach((t) => t.stop());
+      video.remove();
+
+      if (!detection) {
+        alert("❌ Nenhum rosto detectado. Tente novamente.");
+        return;
+      }
+
+      const bestMatch = faceMatcher.findBestMatch(detection.descriptor);
+
+      if (bestMatch.label === nomeFuncionario && bestMatch.distance < 0.5) {
+        alert("✅ Rosto reconhecido com sucesso!");
+        navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
+      } else {
+        alert("⚠️ Rosto não reconhecido. Acesso negado.");
+      }
+    } catch (err) {
+      console.error("Erro no reconhecimento facial:", err);
+      alert("Erro durante o reconhecimento facial.");
+    }
+  };
 
   if (carregando) {
     return (
@@ -208,7 +227,6 @@ const handleReconhecimentoFacial = async (funcId, nomeFuncionario) => {
         color: "white",
       }}
     >
-      {/* Cabeçalho com logo e nome da loja */}
       <Box
         sx={{
           position: "fixed",
@@ -245,7 +263,6 @@ const handleReconhecimentoFacial = async (funcId, nomeFuncionario) => {
         </Typography>
       </Box>
 
-      {/* Formulário adicionar funcionário */}
       <Paper
         sx={{
           p: 3,
@@ -283,7 +300,6 @@ const handleReconhecimentoFacial = async (funcId, nomeFuncionario) => {
         </Box>
       </Paper>
 
-      {/* Lista de funcionários */}
       <Paper
         sx={{
           p: 2,
@@ -324,7 +340,6 @@ const handleReconhecimentoFacial = async (funcId, nomeFuncionario) => {
         )}
       </Paper>
 
-      {/* Botões inferiores */}
       <Stack direction="row" spacing={2} justifyContent="center" mt={4}>
         {isAdmin && (
           <Button
