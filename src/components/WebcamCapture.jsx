@@ -6,14 +6,15 @@ import Webcam from "react-webcam";
  * WebcamCapture
  *
  * Props:
- *  - onCapture(blob, dataUrl)            -> chamado quando o usuário clica no botão de captura
+ *  - onCapture(blob, dataUrl)            -> chamado quando o usuário clica no botão de captura (manual)
  *  - captureLabel (string)              -> texto do botão de captura (padrão: "Capturar")
  *  - facingMode ("user"|"environment")  -> câmera usada
  *  - constraints (object)               -> overrides para getUserMedia
  *  - autoCapture (bool)                 -> se true, captura frames automaticamente
  *  - onFrame (async fn(blob, dataUrl))  -> chamado a cada frame capturado quando autoCapture=true
+ *                                         SE onFrame retornar true (ou Promise<true>) o loop é interrompido
  *  - frameInterval (number ms)          -> intervalo entre frames em autoCapture (padrão 900 ms)
- *  - hideControls (bool)                -> se true, oculta botões de controle (para uso automático)
+ *  - hideControls (bool)                -> se true, não renderiza os botões de controle (use para verificação automática)
  */
 export default function WebcamCapture({
   onCapture,
@@ -29,6 +30,7 @@ export default function WebcamCapture({
   const [playing, setPlaying] = useState(true);
   const [loading, setLoading] = useState(false);
   const intervalRef = useRef(null);
+  const stoppedByMatchRef = useRef(false);
 
   const videoConstraints = {
     facingMode,
@@ -64,21 +66,52 @@ export default function WebcamCapture({
 
   // rotina automática que chama onFrame repetidamente
   useEffect(() => {
+    // limpa intervalo anterior
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
+    stoppedByMatchRef.current = false;
 
+    // só liga autoCapture se o caller forneceu onFrame e autoCapture === true
     if (autoCapture && playing && typeof onFrame === "function") {
-      intervalRef.current = setInterval(async () => {
+      const intervalMs = Math.max(150, frameInterval);
+
+      // função que captura e chama onFrame. Se onFrame retornar truthy -> parar.
+      const runOnce = async () => {
         try {
           const res = await takeScreenshot();
-          if (!res) return;
-          await onFrame(res.blob, res.dataUrl);
+          if (!res) return false;
+          // Chama onFrame; se retornar true (ou Promise resolvendo true), consideramos match e paramos
+          const maybe = onFrame(res.blob, res.dataUrl);
+          const resolved = maybe instanceof Promise ? await maybe : maybe;
+          if (resolved === true) {
+            stoppedByMatchRef.current = true;
+            // interrompe interval
+            if (intervalRef.current) {
+              clearInterval(intervalRef.current);
+              intervalRef.current = null;
+            }
+            // opcional: pausa o vídeo (mantém controle do componente)
+            setPlaying(false);
+            return true;
+          }
         } catch (err) {
+          // não interrompe o loop se onFrame falhar — apenas loga
           console.warn("Erro em onFrame:", err);
         }
-      }, Math.max(150, frameInterval));
+        return false;
+      };
+
+      // roda imediatamente e depois no intervalo (ajuda reconhecimento mais rápido)
+      (async () => {
+        await runOnce();
+        if (!stoppedByMatchRef.current) {
+          intervalRef.current = setInterval(async () => {
+            await runOnce();
+          }, intervalMs);
+        }
+      })();
     }
 
     return () => {
@@ -89,17 +122,19 @@ export default function WebcamCapture({
     };
   }, [autoCapture, onFrame, takeScreenshot, playing, frameInterval]);
 
+  // cleanup quando componente desmonta
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
+  }, []);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-      <div
-        style={{
-          width: "100%",
-          maxWidth: 720,
-          background: "#111",
-          borderRadius: 6,
-          overflow: "hidden",
-        }}
-      >
+      <div style={{ width: "100%", maxWidth: 720, background: "#111", borderRadius: 6, overflow: "hidden" }}>
         <Webcam
           audio={false}
           ref={webcamRef}
@@ -110,6 +145,7 @@ export default function WebcamCapture({
         />
       </div>
 
+      {/* Se hideControls for verdadeiro, não renderiza botões */}
       {!hideControls && (
         <div style={{ display: "flex", gap: 8 }}>
           <button

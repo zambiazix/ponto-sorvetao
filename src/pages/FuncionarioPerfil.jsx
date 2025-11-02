@@ -408,7 +408,10 @@ export default function FuncionarioPerfil() {
                   if (!storedArr) return;
                   const storedDesc = arrayToDescriptor(storedArr);
                   const { match } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
-                  if (match) await onVerifyPunchSuccess();
+                  if (match) {
+  await onVerifyPunchSuccess();
+  return true; // <--- sinaliza ao WebcamCapture para parar o loop automático
+}
                 } catch (err) {
                   console.warn("Erro durante verificação automática:", err);
                 }
