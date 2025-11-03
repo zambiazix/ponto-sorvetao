@@ -222,21 +222,42 @@ export default function FuncionarioPerfil() {
     }
   };
 
-  const verifyLiveAgainstReference = async (blob, dataUrl, onSuccess, onFail) => {
-    try {
-      const img = await createImageElementFromDataUrl(dataUrl);
-      const liveDesc = await getFaceDescriptorFromMedia(img);
-      if (!liveDesc) return onFail("Rosto não detectado.");
-      const storedArr = funcData?.faceDescriptor || null;
-      if (!storedArr) return onFail("Sem foto cadastrada.");
-      const storedDesc = arrayToDescriptor(storedArr);
-      const { match } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
-      if (match) await onSuccess();
-      else onFail("Rosto não confere.");
-    } catch {
-      onFail("Erro na verificação facial.");
+  // Substitui a função verifyLiveAgainstReference
+const verifyLiveAgainstReference = async (dataUrl) => {
+  try {
+    if (!funcData?.faceDescriptor) {
+      console.warn("Funcionário sem faceDescriptor cadastrado.");
+      return false;
     }
-  };
+
+    const img = await createImageElementFromDataUrl(dataUrl);
+    if (!img) {
+      console.warn("❌ Nenhuma imagem criada a partir do frame.");
+      return false;
+    }
+
+    const liveDesc = await getFaceDescriptorFromMedia(img);
+    if (!liveDesc) {
+      console.warn("❌ Nenhum rosto detectado neste frame.");
+      return false;
+    }
+
+    const storedDesc = arrayToDescriptor(funcData.faceDescriptor);
+    const { match, distance } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
+    console.log("🔍 Comparação facial -> match:", match, "distância:", distance?.toFixed?.(3));
+
+    if (match) {
+      console.log("✅ Rosto reconhecido com sucesso! Registrando ponto...");
+      await onVerifyPunchSuccess();
+      return true; // sinaliza sucesso -> encerra loop
+    }
+
+    return false; // continua tentando
+  } catch (err) {
+    console.error("❌ Erro durante verificação facial:", err);
+    return false;
+  }
+};
 
   const requestPunchWithFace = async () => {
     if (isAdmin) return onVerifyPunchSuccess();
@@ -419,6 +440,7 @@ export default function FuncionarioPerfil() {
               autoCapture
               hideControls
               facingMode="user"
+              frameInterval={1000} // captura 1 frame/segundo
               onFrame={async (blob, dataUrl) => {
                 // Proteção: se já estivermos verificando, ignora frames adicionais
                 if (verificando) {
