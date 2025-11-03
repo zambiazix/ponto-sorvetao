@@ -63,7 +63,7 @@ export default function FuncionarioPerfil() {
   const [funcData, setFuncData] = useState(null);
   const [pontos, setPontos] = useState([]);
   const [lojaNome, setLojaNome] = useState("");
-  const [mode, setMode] = useState("view");
+  const [mode, setMode] = useState("view"); // view | enroll | verify-punch
   const [isAdmin, setIsAdmin] = useState(false);
   const [carregando, setCarregando] = useState(true);
   const [uploadingAtestado, setUploadingAtestado] = useState(false);
@@ -219,6 +219,22 @@ export default function FuncionarioPerfil() {
     } catch (err) {
       console.error("❌ Erro onVerifyPunchSuccess:", err);
       alert("Erro ao registrar ponto.");
+    }
+  };
+
+  const verifyLiveAgainstReference = async (blob, dataUrl, onSuccess, onFail) => {
+    try {
+      const img = await createImageElementFromDataUrl(dataUrl);
+      const liveDesc = await getFaceDescriptorFromMedia(img);
+      if (!liveDesc) return onFail("Rosto não detectado.");
+      const storedArr = funcData?.faceDescriptor || null;
+      if (!storedArr) return onFail("Sem foto cadastrada.");
+      const storedDesc = arrayToDescriptor(storedArr);
+      const { match } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
+      if (match) await onSuccess();
+      else onFail("Rosto não confere.");
+    } catch {
+      onFail("Erro na verificação facial.");
     }
   };
 
@@ -406,7 +422,6 @@ export default function FuncionarioPerfil() {
               onFrame={async (blob, dataUrl) => {
                 // Proteção: se já estivermos verificando, ignora frames adicionais
                 if (verificando) {
-                  // console.log("Já verificando, ignorando frame.");
                   return false;
                 }
 
