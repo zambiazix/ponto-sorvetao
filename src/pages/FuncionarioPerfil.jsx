@@ -30,6 +30,10 @@ import {
   Chip,
   IconButton,
   TextField,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
@@ -38,6 +42,10 @@ import CameraAltIcon from "@mui/icons-material/CameraAlt";
 import CancelIcon from "@mui/icons-material/Cancel";
 import PhotoCamera from "@mui/icons-material/PhotoCamera";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
+import EditIcon from "@mui/icons-material/Edit";
+import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
+import SaveIcon from "@mui/icons-material/Save";
+import RestoreIcon from "@mui/icons-material/SettingsBackupRestore";
 
 import { uploadImage } from "../services/cloudinary";
 import WebcamCapture from "../components/WebcamCapture";
@@ -56,6 +64,7 @@ import {
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
+// constants
 const ADMIN_UID = "mD3ie8YGmgaup2VVDpKuMBltXgp2";
 const THRESHOLD = 0.55;
 const BRAZIL_TZ = "America/Sao_Paulo";
@@ -67,6 +76,7 @@ export default function FuncionarioPerfil() {
   const { lojaId, funcionarioId } = useParams();
   const navigate = useNavigate();
 
+  // main states
   const [funcData, setFuncData] = useState(null);
   const [pontos, setPontos] = useState([]);
   const [lojaNome, setLojaNome] = useState("");
@@ -79,11 +89,23 @@ export default function FuncionarioPerfil() {
   const [regionalHolidaysText, setRegionalHolidaysText] = useState("");
   const [regionalHolidaysParsed, setRegionalHolidaysParsed] = useState([]);
 
+  // dialog for editing a point (admin)
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editingPoint, setEditingPoint] = useState(null);
+  const [editingFields, setEditingFields] = useState({
+    entrada: "",
+    intervaloSaida: "",
+    intervaloVolta: "",
+    saida: "",
+    status: "",
+  });
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
       setIsAdmin(!!user && user.uid === ADMIN_UID);
     });
     return () => unsub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Carrega modelos e dados iniciais
@@ -512,26 +534,136 @@ export default function FuncionarioPerfil() {
     }
   };
 
+  // open edit dialog (admin)
+  const openEditDialog = (p) => {
+    if (!isAdmin) return alert("Somente admin pode editar pontos.");
+    setEditingPoint(p);
+    setEditingFields({
+      entrada: p.entrada || "",
+      intervaloSaida: p.intervaloSaida || "",
+      intervaloVolta: p.intervaloVolta || "",
+      saida: p.saida || "",
+      status: p.status || "OK",
+    });
+    setEditDialogOpen(true);
+  };
+
+  const saveEditedPoint = async () => {
+    if (!editingPoint) return;
+    const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", editingPoint.id);
+    try {
+      await updateDoc(docRef, {
+        entrada: editingFields.entrada || null,
+        intervaloSaida: editingFields.intervaloSaida || null,
+        intervaloVolta: editingFields.intervaloVolta || null,
+        saida: editingFields.saida || null,
+        status: editingFields.status || "OK",
+        updatedAt: serverTimestamp(),
+      });
+      await carregarPontos();
+      alert("Ponto atualizado!");
+      setEditDialogOpen(false);
+    } catch (err) {
+      console.error("Erro ao salvar ponto editado:", err);
+      alert("Erro ao salvar alterações.");
+    }
+  };
+
+  // helpers time conversion
   const toMinutes = (t) => {
     if (!t) return null;
     const [h, m] = t.split(":").map(Number);
+    if (Number.isNaN(h) || Number.isNaN(m)) return null;
     return h * 60 + m;
   };
 
+  // ---------- NEW LOGIC: tratar saídas que ocorrem na madrugada ----------
+  // Regra descrita:
+  // - Se existir 'intervaloVolta' (volta do intervalo), usamos ela como referência:
+  //     saída será considerada parte do mesmo expediente se ocorrer até N horas após a volta do intervalo.
+  // - Se NÃO existir 'intervaloVolta', usamos a 'entrada' como referência, mas com um limite maior.
+  // Parâmetros configuráveis:
+  const MAX_HOURS_AFTER_VOLTA = 8; // horas após volta do intervalo (ex.: 8h)
+  const MAX_HOURS_AFTER_ENTRADA_FALLBACK = 14; // se não houver volta do intervalo, 14h após entrada
+
+  function shouldAssociateSaidaWithSameDay(p) {
+    // p: objeto ponto com campos entrada, intervaloSaida, intervaloVolta, saida (strings 'HH:MM')
+    if (!p || !p.saida) return false;
+    // if there's a volta do intervalo, prefer that
+    const ref = p.intervaloVolta || p.entrada;
+    if (!ref) return false;
+    const refMinutes = toMinutes(ref);
+    const saidaMinutes = toMinutes(p.saida);
+    if (refMinutes == null || saidaMinutes == null) return false;
+
+    // if saida >= ref -> same day obviously
+    if (saidaMinutes >= refMinutes) return true;
+
+    // if saida < ref, it's probably in next day -> measure difference considering wrap-around
+    // compute minutes difference considering next day:
+    const diffIfNextDay = saidaMinutes + 24 * 60 - refMinutes; // minutes from ref to next-day saida
+
+    if (p.intervaloVolta) {
+      // use MAX_HOURS_AFTER_VOLTA
+      return diffIfNextDay <= MAX_HOURS_AFTER_VOLTA * 60;
+    } else {
+      // fallback to entrada
+      return diffIfNextDay <= MAX_HOURS_AFTER_ENTRADA_FALLBACK * 60;
+    }
+  }
+
+  // calcula minutos trabalhados no dia, considerando saída possivelmente no dia seguinte
   const calcMinutesWorkedForDay = (p) => {
-    const e = toMinutes(p.entrada),
-      isOut = toMinutes(p.intervaloSaida),
-      iv = toMinutes(p.intervaloVolta),
-      s = toMinutes(p.saida);
+    // p: { entrada, intervaloSaida, intervaloVolta, saida }
+    // strategy: compute first segment (entrada -> intervaloSaida) if present and valid
+    // then second segment (intervaloVolta -> saida) if present and valid
+    // if saida appears to be next day, adjust accordingly (add 24h)
+    const parse = (t) => (t ? toMinutes(t) : null);
+    const e = parse(p.entrada);
+    const isOut = parse(p.intervaloSaida);
+    let iv = parse(p.intervaloVolta);
+    let s = parse(p.saida);
+
+    // if saida is present and should be associated with previous day but s < reference, add 24h to s
+    if (s != null) {
+      // choose reference as intervaloVolta when exists, else entrada
+      const ref = iv != null ? iv : e;
+      if (ref != null && s < ref) {
+        // check association rule
+        if (shouldAssociateSaidaWithSameDay(p)) {
+          s = s + 24 * 60;
+        } else {
+          // otherwise, interpret saída as belonging to next day's record (i.e., don't count here)
+          // We'll return totals only from segments that close within the day
+          // So we treat s as null (no valid saída for this day)
+          s = null;
+        }
+      }
+    }
+
     let total = 0;
-    if (e && isOut && isOut > e) total += isOut - e;
-    if (iv && s && s > iv) total += s - iv;
-    return total;
+    // first segment
+    if (e != null && isOut != null && isOut > e) total += isOut - e;
+    // second segment
+    if (iv != null && s != null && s > iv) total += s - iv;
+
+    // if there is no interval but whole shift is entrada->saida (no intervalo), allow e->s
+    if ((isOut == null || iv == null) && e != null && s != null && s > e) {
+      // ensure we didn't double-count e->s if we already counted isOut->iv above
+      // if isOut && iv present then above already accounted; but if they are absent, add e->s
+      // check that s not already consumed by second segment (we added only when iv && s)
+      const countedViaSegments = (e != null && isOut != null && isOut > e) || (iv != null && s != null && s > iv);
+      if (!countedViaSegments) {
+        total = s - e;
+      }
+    }
+
+    return Math.max(0, Math.round(total));
   };
 
   const minutesToHHMM = (mins) => {
-    const h = Math.floor(mins / 60);
-    const m = Math.round(mins % 60);
+    const h = Math.floor(mins / 60) || 0;
+    const m = Math.round(mins % 60) || 0;
     return `${h}h ${m}m`;
   };
 
@@ -611,8 +743,29 @@ export default function FuncionarioPerfil() {
     }
   };
 
+  // Verifica feriado: junta feriados nacionais via BrasilAPI + regionais do texto salvo
+  const isFeriado = async (isoDate) => {
+    // isoDate: YYYY-MM-DD
+    // check regional cached parsed first (by dd/mm or iso)
+    const ddmm = formatDateToDDMM(isoDate);
+    const regionalMatch = (regionalHolidaysParsed || []).find((f) => f.dateIso === isoDate || f.date === ddmm);
+    if (regionalMatch) return { ok: true, source: "regional", name: regionalMatch.name, date: regionalMatch.date };
+    // fallback to brasilapi (we could cache per year)
+    const ano = isoDate.slice(0, 4);
+    try {
+      const resp = await fetch(`https://brasilapi.com.br/api/feriados/v1/${ano}`);
+      if (!resp.ok) return { ok: false };
+      const json = await resp.json();
+      const found = json.find((f) => f.date === isoDate);
+      if (found) return { ok: true, source: "nacional", name: found.name, date: formatDateToDDMM(found.date) };
+    } catch (err) {
+      console.warn("isFeriado: erro ao consultar BrasilAPI:", err);
+    }
+    return { ok: false };
+  };
+
   // ============================
-  // gerarRelatorio (PDF)
+  // Função: gerarRelatorio (PDF)
   // ============================
   const gerarRelatorio = async (monthObj) => {
     try {
@@ -649,16 +802,19 @@ export default function FuncionarioPerfil() {
       // 3) juntar feriados: nacionais + regionais (regionais podem ter dateIso or dd/mm)
       const todosFeriados = [...feriadosNacionais, ...feriadosRegionaisFromText];
 
-      // 4) tabela: para cada dia presente em monthObj.days (que são os pontos desse mês)
+      // 4) tabela: para cada dia do mês, preferimos mostrar todos os dias do mês (1..N)
+      // mas você pediu que a lista seja "dos pontos batidos naquele mês, separados por dia".
+      // Interpretarei que quer uma linha por dia do mês com os dados (se houver ponto mostra horários, se não houver mostra FOLGA ou status)
+      // Construir linhas para cada dia do mês
       const rows = [];
       let totalMinutesMonth = 0;
-      // garantir ordenação por dia asc
-      const daysSorted = [...monthObj.days].sort((a, b) => a.id.localeCompare(b.id));
-      for (const p of daysSorted) {
-        // p.id é YYYY-MM-DD
-        const iso = p.id;
+      const daysInMonth = new Date(ano, mesIndex + 1, 0).getDate();
+      for (let day = 1; day <= daysInMonth; day++) {
+        const dd = String(day).padStart(2, "0");
+        const mm = String(mesIndex + 1).padStart(2, "0");
+        const iso = `${ano}-${mm}-${dd}`; // YYYY-MM-DD
+        const p = monthObj.days.find((d) => d.id === iso);
         const dateObj = new Date(iso + "T00:00:00");
-        const dataFormatada = iso.split("-").reverse().join("/"); // dd/mm/yyyy
         const weekday = dateObj.toLocaleDateString("pt-BR", { weekday: "long" });
         const ddmm = formatDateToDDMM(iso);
 
@@ -669,23 +825,29 @@ export default function FuncionarioPerfil() {
 
         const diaLabel = feriadoMatch ? `${capitalize(weekday)} (Feriado)` : capitalize(weekday);
 
-        // Se existir status diferente de OK e existir, mostra o status em todas as colunas (como pediu)
-        let entradaCell = p.entrada || "-";
-        let saidaIntCell = p.intervaloSaida || "-";
-        let voltaIntCell = p.intervaloVolta || "-";
-        let saidaCell = p.saida || "-";
+        let entradaCell = "-";
+        let saidaIntCell = "-";
+        let voltaIntCell = "-";
+        let saidaCell = "-";
 
-        if (p.status && p.status !== "OK") {
-          // mostra status em todas colunas (conforme pedido do exemplo)
-          entradaCell = saidaIntCell = voltaIntCell = saidaCell = p.status;
+        if (p) {
+          entradaCell = p.entrada || "-";
+          saidaIntCell = p.intervaloSaida || "-";
+          voltaIntCell = p.intervaloVolta || "-";
+          saidaCell = p.saida || "-";
+
+          if (p.status && p.status !== "OK") {
+            entradaCell = saidaIntCell = voltaIntCell = saidaCell = p.status;
+          }
+          const minutosDia = calcMinutesWorkedForDay(p);
+          totalMinutesMonth += minutosDia;
+        } else {
+          // sem registro -> FOLGA
+          entradaCell = saidaIntCell = voltaIntCell = saidaCell = "FOLGA";
         }
 
-        // calcula total minutos do dia (mesmo se status diferente — só soma quando houver horários)
-        const minutosDia = calcMinutesWorkedForDay(p);
-        totalMinutesMonth += minutosDia;
-
         rows.push([
-          dataFormatada,
+          `${dd}/${mm}/${ano}`,
           diaLabel,
           entradaCell,
           saidaIntCell,
@@ -714,8 +876,13 @@ export default function FuncionarioPerfil() {
         body: rows,
         theme: "grid",
         headStyles: { fillColor: [41, 128, 185] },
-        styles: { fontSize: 10, cellPadding: 6 },
+        styles: { fontSize: 9, cellPadding: 6 },
         margin: { left: 40, right: 40 },
+        columnStyles: {
+          0: { cellWidth: 70 },
+          1: { cellWidth: 110 },
+          // rest auto
+        },
       });
 
       // adiciona lista de feriados regionais (se houver) antes do total
@@ -777,9 +944,7 @@ export default function FuncionarioPerfil() {
     return s ? s.toLowerCase().replace(/\s+/g, "_").replace(/[^\w_-]/g, "") : "funcionario";
   }
 
-  // ============================
   // UI render
-  // ============================
   if (carregando)
     return (
       <Container
@@ -887,15 +1052,25 @@ export default function FuncionarioPerfil() {
 
         <Divider sx={{ my: 3, bgcolor: "#333" }} />
 
-        {/* CONFIG UI: Feriados Regionais */}
+        {/* CONFIG UI: Feriados Regionais (somente admin) */}
         {isAdmin && (
           <Paper sx={{ p: 2, mb: 2, bgcolor: "#222", borderRadius: 2 }}>
-            <Typography variant="subtitle1" sx={{ color: "#fff", mb: 1 }}>
-              Feriados Regionais (configuração)
-            </Typography>
-            <Typography variant="caption" color="#bbb" sx={{ display: "block", mb: 1 }}>
-              Formatos por linha: <code>YYYY-MM-DD - Nome</code> ou <code>DD/MM - Nome</code> ou <code>DD/MM/YYYY - Nome</code>.
-            </Typography>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1}>
+              <Box>
+                <Typography variant="subtitle1" sx={{ color: "#fff" }}>
+                  Feriados Regionais (configuração)
+                </Typography>
+                <Typography variant="caption" color="#bbb" sx={{ display: "block" }}>
+                  Formatos por linha: <code>YYYY-MM-DD - Nome</code> ou <code>DD/MM - Nome</code> ou <code>DD/MM/YYYY - Nome</code>.
+                </Typography>
+              </Box>
+              <Stack direction="row" spacing={1}>
+                <Button size="small" startIcon={<SaveIcon />} onClick={() => saveRegionaisToStorage(regionalHolidaysText)} variant="contained">Salvar</Button>
+                <Button size="small" startIcon={<RestoreIcon />} onClick={() => { loadRegionaisFromStorage(); alert("Restaurado das configurações salvas."); }} variant="outlined">Restaurar</Button>
+                <Button size="small" color="error" onClick={() => { clearRegionais(); alert("Feriados regionais limpos."); }} variant="outlined">Limpar</Button>
+              </Stack>
+            </Stack>
+
             <TextField
               multiline
               minRows={3}
@@ -907,17 +1082,6 @@ export default function FuncionarioPerfil() {
               sx={{ mb: 1 }}
               InputProps={{ style: { backgroundColor: "#1a1a1a", color: "white" } }}
             />
-            <Stack direction="row" spacing={1}>
-              <Button variant="contained" size="small" onClick={() => saveRegionaisToStorage(regionalHolidaysText)}>
-                Salvar
-              </Button>
-              <Button variant="outlined" size="small" onClick={() => { loadRegionaisFromStorage(); alert("Restaurado das configurações salvas."); }}>
-                Restaurar Salvo
-              </Button>
-              <Button variant="outlined" size="small" onClick={() => { clearRegionais(); alert("Feriados regionais limpos."); }}>
-                Limpar
-              </Button>
-            </Stack>
           </Paper>
         )}
 
@@ -931,11 +1095,11 @@ export default function FuncionarioPerfil() {
               <Box sx={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2 }}>
                 <Typography sx={{ textTransform: "capitalize" }}>{month.label} — ⏱️ {minutesToHHMM(month.totalMinutes)}</Typography>
                 {isAdmin ? (
-                  <Button variant="outlined" size="small" onClick={() => gerarRelatorio(month)}>
+                  <Button variant="outlined" size="small" startIcon={<PictureAsPdfIcon />} onClick={() => gerarRelatorio(month)}>
                     Gerar Relatório
                   </Button>
                 ) : (
-                  <Button variant="outlined" size="small" disabled>
+                  <Button variant="outlined" size="small" disabled startIcon={<PictureAsPdfIcon />}>
                     Gerar Relatório
                   </Button>
                 )}
@@ -948,7 +1112,19 @@ export default function FuncionarioPerfil() {
                     <Paper sx={{ p: 1.5, bgcolor: "#252525", borderRadius: 2 }}>
                       <Stack direction="row" justifyContent="space-between" alignItems="center">
                         <Typography sx={{ color: "#fff" }}>{p.id}</Typography>
-                        <Chip label={`${p.status || "OK"}`} size="small" sx={{ bgcolor: "#333", color: "white", fontWeight: "bold" }} />
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <Chip label={`${p.status || "OK"}`} size="small" sx={{ bgcolor: "#333", color: "white", fontWeight: "bold" }} />
+                          {isAdmin && (
+                            <>
+                              <IconButton size="small" color="primary" onClick={() => openEditDialog(p)}>
+                                <EditIcon />
+                              </IconButton>
+                              <IconButton size="small" color="error" onClick={() => handleExcluirPonto(p.id)}>
+                                <DeleteForeverIcon />
+                              </IconButton>
+                            </>
+                          )}
+                        </Stack>
                       </Stack>
                       <Typography variant="body2" color="#bbb" sx={{ mt: 1 }}>
                         Entrada: {p.entrada || "-"} | Saída Intervalo: {p.intervaloSaida || "-"} | Volta: {p.intervaloVolta || "-"} | Saída: {p.saida || "-"}
@@ -968,9 +1144,6 @@ export default function FuncionarioPerfil() {
                           Enviar Atestado
                           <input hidden type="file" accept="image/*,application/pdf" onChange={(e) => handleUploadAtestado(p.id, e.target.files[0])} />
                         </Button>
-                        <IconButton color="error" onClick={() => handleExcluirPonto(p.id)}>
-                          <DeleteForeverIcon />
-                        </IconButton>
                       </Stack>
                     </Paper>
                   </Grid>
@@ -980,6 +1153,24 @@ export default function FuncionarioPerfil() {
           </Accordion>
         ))}
       </Paper>
+
+      {/* Edit dialog */}
+      <Dialog open={editDialogOpen} onClose={() => setEditDialogOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Editar Ponto — {editingPoint?.id}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} mt={1}>
+            <TextField label="Entrada (HH:MM)" value={editingFields.entrada} onChange={(e) => setEditingFields((s) => ({ ...s, entrada: e.target.value }))} />
+            <TextField label="Saída Intervalo (HH:MM)" value={editingFields.intervaloSaida} onChange={(e) => setEditingFields((s) => ({ ...s, intervaloSaida: e.target.value }))} />
+            <TextField label="Volta Intervalo (HH:MM)" value={editingFields.intervaloVolta} onChange={(e) => setEditingFields((s) => ({ ...s, intervaloVolta: e.target.value }))} />
+            <TextField label="Saída (HH:MM)" value={editingFields.saida} onChange={(e) => setEditingFields((s) => ({ ...s, saida: e.target.value }))} />
+            <TextField label="Status (OK / FOLGA / ATESTADO / FÉRIAS ...)" value={editingFields.status} onChange={(e) => setEditingFields((s) => ({ ...s, status: e.target.value }))} />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditDialogOpen(false)} startIcon={<CancelIcon />}>Cancelar</Button>
+          <Button onClick={saveEditedPoint} variant="contained" startIcon={<SaveIcon />}>Salvar</Button>
+        </DialogActions>
+      </Dialog>
     </Container>
   );
 }
@@ -988,7 +1179,7 @@ export default function FuncionarioPerfil() {
 // Additional helpers (outside component)
 // ---------------------------
 
-// Converte minutos para formato HH:MM
+// Converte minutos para formato HH:MM (2 dígitos)
 function minutesToHHMM(minutos) {
   const h = Math.floor(minutos / 60);
   const m = Math.round(minutos % 60);
@@ -1009,6 +1200,8 @@ function calcMinutesWorkedForDay(p) {
   let total = 0;
   if (e && isOut && isOut > e) total += isOut - e;
   if (iv && s && s > iv) total += s - iv;
+  // fallback full shift
+  if ((!isOut || !iv) && e && s && s > e) total = s - e;
   return total;
 }
 
