@@ -432,78 +432,73 @@ const verifyLiveAgainstReference = async (dataUrl) => {
         )}
 
         {mode === "verify-punch" && (
-          <Paper sx={{ p: 2, bgcolor: "#2a2a2a", borderRadius: 2, textAlign: "center" }}>
-            <Typography mb={1} sx={{ color: "#fff" }}>
-              Posicione o rosto — a verificação será feita automaticamente
-            </Typography>
-            <WebcamCapture
-              autoCapture
-              hideControls
-              facingMode="user"
-              frameInterval={1000} // captura 1 frame/segundo
-              onFrame={async (blob, dataUrl) => {
-                // Proteção: se já estivermos verificando, ignora frames adicionais
-                if (verificando) {
-                  return false;
-                }
+  <Paper sx={{ p: 2, bgcolor: "#2a2a2a", borderRadius: 2, textAlign: "center" }}>
+    <Typography mb={1} sx={{ color: "#fff" }}>
+      Posicione o rosto — a verificação será feita automaticamente
+    </Typography>
 
-                try {
-                  // transforma dataUrl em img
-                  const img = await createImageElementFromDataUrl(dataUrl);
-                  if (!img) {
-                    console.log("❌ createImageElementFromDataUrl retornou null.");
-                    return false;
-                  }
+    <WebcamCapture
+      autoCapture
+      hideControls
+      facingMode="user"
+      frameInterval={1000} // captura 1 frame/segundo
+      onFrame={async (blob, dataUrl) => {
+        if (verificando) return false;
+        setVerificando(true);
 
-                  const liveDesc = await getFaceDescriptorFromMedia(img);
-                  if (!liveDesc) {
-                    console.log("❌ Nenhum rosto detectado neste frame.");
-                    return false;
-                  }
+        try {
+          const img = await createImageElementFromDataUrl(dataUrl);
+          if (!img) {
+            console.log("❌ Nenhuma imagem válida neste frame.");
+            return false;
+          }
 
-                  const storedArr = funcData?.faceDescriptor || null;
-                  if (!storedArr) {
-                    console.log("⚠️ Funcionário sem faceDescriptor cadastrado.");
-                    return false;
-                  }
+          const liveDesc = await getFaceDescriptorFromMedia(img);
+          if (!liveDesc) {
+            console.log("❌ Nenhum rosto detectado neste frame.");
+            return false;
+          }
 
-                  const storedDesc = arrayToDescriptor(storedArr);
-                  const { match, distance } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
-                  console.log("Comparação facial -> match:", match, "dist:", typeof distance === "number" ? distance.toFixed(3) : distance);
+          if (!funcData?.faceDescriptor) {
+            console.log("⚠️ Sem faceDescriptor cadastrado.");
+            return false;
+          }
 
-                  if (match) {
-                    try {
-                      // Evita reentrância
-                      setVerificando(true);
-                      console.log("✅ Rosto reconhecido — chamando onVerifyPunchSuccess()");
-                      await onVerifyPunchSuccess();
-                      // retornando true sinalizamos ao componente de webcam que deu match
-                      return true;
-                    } finally {
-                      // deixa como false só depois de pequena espera para evitar loops rápidos
-                      setTimeout(() => setVerificando(false), 500);
-                    }
-                  }
+          const storedDesc = arrayToDescriptor(funcData.faceDescriptor);
+          const { match, distance } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
 
-                  // não houve match; continuar tentando
-                  return false;
-                } catch (err) {
-                  console.warn("Erro durante verificação automática:", err);
-                  return false;
-                }
-              }}
-            />
-            <Button
-              startIcon={<CancelIcon />}
-              variant="outlined"
-              color="inherit"
-              sx={{ mt: 2 }}
-              onClick={() => setMode("view")}
-            >
-              Cancelar
-            </Button>
-          </Paper>
-        )}
+          console.log("🔍 match:", match, "distância:", distance?.toFixed?.(3));
+
+          if (match) {
+            console.log("✅ Reconhecido — registrando ponto...");
+            await onVerifyPunchSuccess();
+            setMode("view");
+            return true; // <- ENCERRA o loop automaticamente
+          }
+
+          // continua tentando se não der match
+          return false;
+        } catch (err) {
+          console.warn("Erro no reconhecimento automático:", err);
+          return false;
+        } finally {
+          // libera para o próximo frame
+          setTimeout(() => setVerificando(false), 500);
+        }
+      }}
+    />
+
+    <Button
+      startIcon={<CancelIcon />}
+      variant="outlined"
+      color="inherit"
+      sx={{ mt: 2 }}
+      onClick={() => setMode("view")}
+    >
+      Cancelar
+    </Button>
+  </Paper>
+)}
 
         {mode === "view" && (
           <Box textAlign="center" mt={2}>
