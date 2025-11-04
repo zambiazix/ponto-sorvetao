@@ -40,6 +40,7 @@ import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 
 import { uploadImage } from "../services/cloudinary";
 import WebcamCapture from "../components/WebcamCapture";
+import * as faceapi from "@vladmandic/face-api";
 import {
   loadFaceApiModels,
   getFaceDescriptorFromMedia,
@@ -76,7 +77,17 @@ export default function FuncionarioPerfil() {
   useEffect(() => {
     (async () => {
       try {
+        // tenta carregar modelos pelo util para manter compatibilidade
         await loadFaceApiModels();
+        // se util não carregou algo internamente, garantir que faceapi também tenha os nets prontos
+        if (!faceapi.nets.ssdMobilenetv1.params) {
+          const MODEL_URL = "/models";
+          await Promise.all([
+            faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+            faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+            faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+          ]);
+        }
         console.log("✅ Modelos face-api carregados (FuncionarioPerfil).");
       } catch (err) {
         console.warn("Falha ao carregar modelos face-api:", err);
@@ -215,7 +226,8 @@ export default function FuncionarioPerfil() {
     }
   };
 
-  // --- Nova função: abre a câmera (video), tenta detectar por N segundos, compara e registra ponto ---
+  // --- Nova função (baseada no Painel): abre a câmera (video), tenta detectar por N segundos,
+  // compara diretamente do elemento <video> usando face-api e registra ponto ---
   const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 8000, intervalMs = 800 } = {}) => {
     // admin bypass
     if (isAdmin) {
@@ -235,7 +247,8 @@ export default function FuncionarioPerfil() {
     try {
       console.log("⏳ Solicitando acesso à câmera...");
       stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-      // cria vídeo oculto (ou visível dependendo se quiser)
+
+      // cria vídeo flutuante (visível) para o usuário — mesmo comportamento do Painel
       video = document.createElement("video");
       video.autoplay = true;
       video.playsInline = true;
@@ -247,6 +260,8 @@ export default function FuncionarioPerfil() {
       video.style.top = "16px";
       video.style.zIndex = 9999;
       video.style.border = "2px solid rgba(255,255,255,0.12)";
+      video.style.borderRadius = "8px";
+      video.style.background = "#000";
       document.body.appendChild(video);
 
       video.srcObject = stream;
@@ -269,18 +284,22 @@ export default function FuncionarioPerfil() {
       let matched = false;
 
       while (Date.now() - start < attemptsTimeout && !matched) {
-        // tenta obter descriptor diretamente do elemento video (getFaceDescriptorFromMedia suporta video)
-        let liveDesc = null;
+        // ---- aqui usamos faceapi diretamente no elemento video (como no Painel) ----
+        let detection = null;
         try {
-          liveDesc = await getFaceDescriptorFromMedia(video);
+          detection = await faceapi
+            .detectSingleFace(video, new faceapi.SsdMobilenetv1Options())
+            .withFaceLandmarks()
+            .withFaceDescriptor();
         } catch (err) {
-          console.warn("Erro ao obter descriptor do vídeo:", err);
-          liveDesc = null;
+          console.warn("Erro faceapi.detectSingleFace:", err);
+          detection = null;
         }
 
-        if (!liveDesc) {
+        if (!detection) {
           console.log("❌ Nenhum rosto detectado neste frame, tentando novamente...");
         } else {
+          const liveDesc = detection.descriptor;
           const { match, distance } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
           console.log("🔍 Comparação -> match:", match, "distance:", typeof distance === "number" ? distance.toFixed(3) : distance);
           if (match) {
