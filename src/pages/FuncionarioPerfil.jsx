@@ -77,20 +77,21 @@ export default function FuncionarioPerfil() {
   useEffect(() => {
     (async () => {
       try {
-        // tenta carregar modelos pelo util para manter compatibilidade
+        console.log("FUNC-PERF: inicializando modelos...");
         await loadFaceApiModels();
-        // se util não carregou algo internamente, garantir que faceapi também tenha os nets prontos
+        // garante nets do faceapi (fallback)
+        const MODEL_URL = "/models";
         if (!faceapi.nets.ssdMobilenetv1.params) {
-          const MODEL_URL = "/models";
+          console.log("FUNC-PERF: faceapi.nets não carregados — carregando via faceapi.loadFromUri...");
           await Promise.all([
             faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
             faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
             faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
           ]);
         }
-        console.log("✅ Modelos face-api carregados (FuncionarioPerfil).");
+        console.log("FUNC-PERF: modelos carregados com sucesso.");
       } catch (err) {
-        console.warn("Falha ao carregar modelos face-api:", err);
+        console.warn("FUNC-PERF: Falha ao carregar modelos face-api:", err);
       }
       await carregarLoja();
       await carregarFuncionario();
@@ -105,7 +106,7 @@ export default function FuncionarioPerfil() {
       const lojaSnap = await getDoc(doc(db, "lojas", lojaId));
       if (lojaSnap.exists()) setLojaNome(lojaSnap.data().nome);
     } catch (err) {
-      console.error("Erro carregarLoja:", err);
+      console.error("FUNC-PERF: Erro carregarLoja:", err);
     }
   };
 
@@ -115,12 +116,12 @@ export default function FuncionarioPerfil() {
       if (funcSnap.exists()) {
         const d = funcSnap.data();
         setFuncData(d);
-        console.log("Dados do funcionário carregados:", { id: funcionarioId, ...d });
+        console.log("FUNC-PERF: Dados do funcionário carregados:", { id: funcionarioId, ...d });
       } else {
-        console.warn("Funcionário não encontrado no Firestore.");
+        console.warn("FUNC-PERF: Funcionário não encontrado no Firestore.");
       }
     } catch (err) {
-      console.error("Erro carregarFuncionario:", err);
+      console.error("FUNC-PERF: Erro carregarFuncionario:", err);
     }
   };
 
@@ -134,8 +135,9 @@ export default function FuncionarioPerfil() {
         .map((d) => ({ id: d.id, ...d.data() }))
         .sort((a, b) => b.id.localeCompare(a.id));
       setPontos(lista);
+      console.log("FUNC-PERF: pontos carregados:", lista.length);
     } catch (err) {
-      console.error("Erro carregarPontos:", err);
+      console.error("FUNC-PERF: Erro carregarPontos:", err);
     } finally {
       setCarregando(false);
     }
@@ -185,7 +187,7 @@ export default function FuncionarioPerfil() {
         await carregarPontos();
       }
     } catch (err) {
-      console.error("Erro verificarFolgaAutomatica:", err);
+      console.error("FUNC-PERF: Erro verificarFolgaAutomatica:", err);
     }
   };
 
@@ -221,15 +223,13 @@ export default function FuncionarioPerfil() {
       alert("✅ Ponto registrado com sucesso!");
       setMode("view");
     } catch (err) {
-      console.error("❌ Erro onVerifyPunchSuccess:", err);
+      console.error("FUNC-PERF: ❌ Erro onVerifyPunchSuccess:", err);
       alert("Erro ao registrar ponto.");
     }
   };
 
-  // --- Nova função (baseada no Painel): abre a câmera (video), tenta detectar por N segundos,
-  // compara diretamente do elemento <video> usando face-api e registra ponto ---
-  const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 8000, intervalMs = 800 } = {}) => {
-    // admin bypass
+  // --- Função que tenta detectar diretamente no <video> (como Painel), com fallback para canvas/dataURL ---
+  const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, intervalMs = 800 } = {}) => {
     if (isAdmin) {
       await onVerifyPunchSuccess();
       return;
@@ -240,15 +240,33 @@ export default function FuncionarioPerfil() {
       return;
     }
 
+    // checar modelos carregados
+    if (!faceapi.nets.ssdMobilenetv1.params || !faceapi.nets.faceRecognitionNet.params) {
+      console.warn("FUNC-PERF: modelos faceapi podem não estar prontos. Tentando carregar novamente...");
+      try {
+        const MODEL_URL = "/models";
+        await Promise.all([
+          faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+        ]);
+        console.log("FUNC-PERF: modelos (re)carregados.");
+      } catch (err) {
+        console.error("FUNC-PERF: não foi possível carregar modelos:", err);
+        alert("Erro: modelos de reconhecimento não estão prontos. Veja console.");
+        return;
+      }
+    }
+
     let stream = null;
     let video = null;
     const storedDesc = arrayToDescriptor(funcData.faceDescriptor);
 
     try {
-      console.log("⏳ Solicitando acesso à câmera...");
+      console.log("FUNC-PERF: solicitando permissão da câmera...");
       stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+      console.log("FUNC-PERF: permissão concedida, iniciando elemento video...");
 
-      // cria vídeo flutuante (visível) para o usuário — mesmo comportamento do Painel
       video = document.createElement("video");
       video.autoplay = true;
       video.playsInline = true;
@@ -266,25 +284,22 @@ export default function FuncionarioPerfil() {
 
       video.srcObject = stream;
 
-      // espera até o vídeo ter frames
       await new Promise((res) => {
         const onCan = () => {
           video.removeEventListener("loadeddata", onCan);
-          // pequeno delay para estabilizar
           setTimeout(res, 250);
         };
         video.addEventListener("loadeddata", onCan);
-        // fallback timeout
         setTimeout(res, 1500);
       });
 
-      console.log("🎥 Vídeo iniciado — iniciando loop de detecção...");
+      console.log("FUNC-PERF: vídeo pronto. iniciando loop de detecção por até", attemptsTimeout, "ms");
 
       const start = Date.now();
       let matched = false;
 
       while (Date.now() - start < attemptsTimeout && !matched) {
-        // ---- aqui usamos faceapi diretamente no elemento video (como no Painel) ----
+        // 1) Tenta detectar direto no elemento video usando faceapi (método do Painel)
         let detection = null;
         try {
           detection = await faceapi
@@ -292,43 +307,81 @@ export default function FuncionarioPerfil() {
             .withFaceLandmarks()
             .withFaceDescriptor();
         } catch (err) {
-          console.warn("Erro faceapi.detectSingleFace:", err);
+          console.warn("FUNC-PERF: faceapi.detectSingleFace(video) falhou:", err);
           detection = null;
         }
 
-        if (!detection) {
-          console.log("❌ Nenhum rosto detectado neste frame, tentando novamente...");
-        } else {
+        if (detection && detection.descriptor) {
+          console.log("FUNC-PERF: rosto detectado via video. comparando...");
           const liveDesc = detection.descriptor;
           const { match, distance } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
-          console.log("🔍 Comparação -> match:", match, "distance:", typeof distance === "number" ? distance.toFixed(3) : distance);
+          console.log("FUNC-PERF: comparação -> match:", match, "distância:", typeof distance === "number" ? distance.toFixed(3) : distance);
           if (match) {
             matched = true;
-            console.log("✅ Rosto reconhecido — registrando ponto...");
+            console.log("FUNC-PERF: ✅ Reconhecimento via video OK — registrando ponto...");
             await onVerifyPunchSuccess();
             break;
           } else {
-            console.log("⚠️ Rosto detectado, mas não confere. Tentando novamente...");
+            console.log("FUNC-PERF: rosto detectado via video, mas não confere. tentando próxima iteração...");
+          }
+        } else {
+          // 2) fallback: captura frame em canvas -> dataURL -> util getFaceDescriptorFromMedia
+          try {
+            // cria canvas temporário
+            const canvas = document.createElement("canvas");
+            canvas.width = video.videoWidth || 420;
+            canvas.height = video.videoHeight || 320;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const dataUrl = canvas.toDataURL("image/jpeg");
+            // libera canvas da memória logo depois
+            // console debug
+            console.log("FUNC-PERF: nenhum detection direto — executando fallback via canvas -> dataURL");
+            const imgEl = await createImageElementFromDataUrl(dataUrl);
+            if (imgEl) {
+              const liveDesc = await getFaceDescriptorFromMedia(imgEl);
+              if (liveDesc) {
+                console.log("FUNC-PERF: descriptor obtido via fallback. comparando...");
+                const { match, distance } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
+                console.log("FUNC-PERF: comparação fallback -> match:", match, "distância:", typeof distance === "number" ? distance.toFixed(3) : distance);
+                if (match) {
+                  matched = true;
+                  console.log("FUNC-PERF: ✅ Reconhecimento via fallback OK — registrando ponto...");
+                  await onVerifyPunchSuccess();
+                  break;
+                } else {
+                  console.log("FUNC-PERF: fallback detectou rosto, mas não confere.");
+                }
+              } else {
+                console.log("FUNC-PERF: fallback não detectou rosto no frame.");
+              }
+            } else {
+              console.log("FUNC-PERF: createImageElementFromDataUrl retornou null no fallback.");
+            }
+          } catch (err) {
+            console.warn("FUNC-PERF: erro no fallback (canvas/dataUrl):", err);
           }
         }
 
-        // intervalo entre tentativas
+        // espera antes de tentar novamente
         await new Promise((r) => setTimeout(r, intervalMs));
       }
 
       if (!matched) {
+        console.log("FUNC-PERF: não houve match após tentativas.");
         alert("😕 Não foi possível reconhecer o rosto. Tente novamente com mais luz e olhando para a câmera.");
       }
     } catch (err) {
-      console.error("Erro durante reconhecimento ao vivo:", err);
+      console.error("FUNC-PERF: Erro durante reconhecimento ao vivo:", err);
       alert("Erro ao acessar a câmera ou durante o reconhecimento. Veja o console para detalhes.");
     } finally {
-      // cleanup: parar stream e remover vídeo
+      // cleanup
       try {
         if (stream) stream.getTracks().forEach((t) => t.stop());
         if (video && video.parentNode) video.parentNode.removeChild(video);
+        console.log("FUNC-PERF: cleanup concluído (stream + video removidos).");
       } catch (err) {
-        console.warn("Erro no cleanup da câmera:", err);
+        console.warn("FUNC-PERF: erro no cleanup:", err);
       }
     }
   };
@@ -339,7 +392,6 @@ export default function FuncionarioPerfil() {
       alert("Dados do funcionário ainda não carregados. Aguarde um pouco.");
       return;
     }
-    // abre a rotina de reconhecimento (isso abre/carega a câmera e roda a verificação)
     await performLiveRecognitionAndPunch({ attemptsTimeout: 9000, intervalMs: 900 });
   };
 
@@ -499,7 +551,7 @@ export default function FuncionarioPerfil() {
                   alert("Foto salva!");
                   setMode("view");
                 } catch (err) {
-                  console.error("Erro enroll:", err);
+                  console.error("FUNC-PERF: Erro enroll:", err);
                   alert("Erro ao salvar foto.");
                 }
               }}
