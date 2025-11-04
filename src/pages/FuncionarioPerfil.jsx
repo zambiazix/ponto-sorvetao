@@ -23,8 +23,6 @@ import {
   Stack,
   Divider,
   CircularProgress,
-  TextField,
-  MenuItem,
   Grid,
   Accordion,
   AccordionSummary,
@@ -37,7 +35,6 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import AddAPhotoIcon from "@mui/icons-material/AddAPhoto";
 import CameraAltIcon from "@mui/icons-material/CameraAlt";
 import CancelIcon from "@mui/icons-material/Cancel";
-import ExitToAppIcon from "@mui/icons-material/ExitToApp";
 import PhotoCamera from "@mui/icons-material/PhotoCamera";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 
@@ -63,25 +60,10 @@ export default function FuncionarioPerfil() {
   const [funcData, setFuncData] = useState(null);
   const [pontos, setPontos] = useState([]);
   const [lojaNome, setLojaNome] = useState("");
-  const [mode, setMode] = useState("view"); // view | enroll | verify-punch
+  const [mode, setMode] = useState("view"); // view | enroll
   const [isAdmin, setIsAdmin] = useState(false);
   const [carregando, setCarregando] = useState(true);
   const [uploadingAtestado, setUploadingAtestado] = useState(false);
-
-  // novo estado para evitar chamadas duplicadas durante verificação automática
-  const [verificando, setVerificando] = useState(false);
-
-  const statusList = ["OK", "FALTA", "ATESTADO", "FÉRIAS", "SUSPENSÃO", "DISPENSA", "FOLGA"];
-
-  const statusEmojis = {
-    OK: "✅",
-    FALTA: "❌",
-    ATESTADO: "📄",
-    FÉRIAS: "🏖️",
-    SUSPENSÃO: "⚠️",
-    DISPENSA: "👋",
-    FOLGA: "😎",
-  };
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
@@ -90,10 +72,12 @@ export default function FuncionarioPerfil() {
     return () => unsub();
   }, []);
 
+  // Carrega modelos e dados iniciais
   useEffect(() => {
     (async () => {
       try {
         await loadFaceApiModels();
+        console.log("✅ Modelos face-api carregados (FuncionarioPerfil).");
       } catch (err) {
         console.warn("Falha ao carregar modelos face-api:", err);
       }
@@ -117,7 +101,13 @@ export default function FuncionarioPerfil() {
   const carregarFuncionario = async () => {
     try {
       const funcSnap = await getDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId));
-      if (funcSnap.exists()) setFuncData(funcSnap.data());
+      if (funcSnap.exists()) {
+        const d = funcSnap.data();
+        setFuncData(d);
+        console.log("Dados do funcionário carregados:", { id: funcionarioId, ...d });
+      } else {
+        console.warn("Funcionário não encontrado no Firestore.");
+      }
     } catch (err) {
       console.error("Erro carregarFuncionario:", err);
     }
@@ -207,7 +197,10 @@ export default function FuncionarioPerfil() {
         dados.intervaloVolta,
         dados.saida,
       ].filter(Boolean).length;
-      if (pontosHoje >= 4) return alert("⚠️ Todos os pontos do dia já foram marcados.");
+      if (pontosHoje >= 4) {
+        alert("⚠️ Todos os pontos do dia já foram marcados.");
+        return;
+      }
       if (!dados.entrada) dados.entrada = horaAtual;
       else if (!dados.intervaloSaida) dados.intervaloSaida = horaAtual;
       else if (!dados.intervaloVolta) dados.intervaloVolta = horaAtual;
@@ -222,47 +215,113 @@ export default function FuncionarioPerfil() {
     }
   };
 
-  // Substitui a função verifyLiveAgainstReference
-const verifyLiveAgainstReference = async (dataUrl) => {
-  try {
-    if (!funcData?.faceDescriptor) {
-      console.warn("Funcionário sem faceDescriptor cadastrado.");
-      return false;
-    }
-
-    const img = await createImageElementFromDataUrl(dataUrl);
-    if (!img) {
-      console.warn("❌ Nenhuma imagem criada a partir do frame.");
-      return false;
-    }
-
-    const liveDesc = await getFaceDescriptorFromMedia(img);
-    if (!liveDesc) {
-      console.warn("❌ Nenhum rosto detectado neste frame.");
-      return false;
-    }
-
-    const storedDesc = arrayToDescriptor(funcData.faceDescriptor);
-    const { match, distance } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
-    console.log("🔍 Comparação facial -> match:", match, "distância:", distance?.toFixed?.(3));
-
-    if (match) {
-      console.log("✅ Rosto reconhecido com sucesso! Registrando ponto...");
+  // --- Nova função: abre a câmera (video), tenta detectar por N segundos, compara e registra ponto ---
+  const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 8000, intervalMs = 800 } = {}) => {
+    // admin bypass
+    if (isAdmin) {
       await onVerifyPunchSuccess();
-      return true; // sinaliza sucesso -> encerra loop
+      return;
     }
 
-    return false; // continua tentando
-  } catch (err) {
-    console.error("❌ Erro durante verificação facial:", err);
-    return false;
-  }
-};
+    if (!funcData?.faceDescriptor || !Array.isArray(funcData.faceDescriptor)) {
+      alert("⚠️ Nenhuma foto de referência cadastrada para este funcionário.");
+      return;
+    }
 
+    let stream = null;
+    let video = null;
+    const storedDesc = arrayToDescriptor(funcData.faceDescriptor);
+
+    try {
+      console.log("⏳ Solicitando acesso à câmera...");
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+      // cria vídeo oculto (ou visível dependendo se quiser)
+      video = document.createElement("video");
+      video.autoplay = true;
+      video.playsInline = true;
+      video.muted = true;
+      video.width = 420;
+      video.height = 320;
+      video.style.position = "fixed";
+      video.style.right = "16px";
+      video.style.top = "16px";
+      video.style.zIndex = 9999;
+      video.style.border = "2px solid rgba(255,255,255,0.12)";
+      document.body.appendChild(video);
+
+      video.srcObject = stream;
+
+      // espera até o vídeo ter frames
+      await new Promise((res) => {
+        const onCan = () => {
+          video.removeEventListener("loadeddata", onCan);
+          // pequeno delay para estabilizar
+          setTimeout(res, 250);
+        };
+        video.addEventListener("loadeddata", onCan);
+        // fallback timeout
+        setTimeout(res, 1500);
+      });
+
+      console.log("🎥 Vídeo iniciado — iniciando loop de detecção...");
+
+      const start = Date.now();
+      let matched = false;
+
+      while (Date.now() - start < attemptsTimeout && !matched) {
+        // tenta obter descriptor diretamente do elemento video (getFaceDescriptorFromMedia suporta video)
+        let liveDesc = null;
+        try {
+          liveDesc = await getFaceDescriptorFromMedia(video);
+        } catch (err) {
+          console.warn("Erro ao obter descriptor do vídeo:", err);
+          liveDesc = null;
+        }
+
+        if (!liveDesc) {
+          console.log("❌ Nenhum rosto detectado neste frame, tentando novamente...");
+        } else {
+          const { match, distance } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
+          console.log("🔍 Comparação -> match:", match, "distance:", typeof distance === "number" ? distance.toFixed(3) : distance);
+          if (match) {
+            matched = true;
+            console.log("✅ Rosto reconhecido — registrando ponto...");
+            await onVerifyPunchSuccess();
+            break;
+          } else {
+            console.log("⚠️ Rosto detectado, mas não confere. Tentando novamente...");
+          }
+        }
+
+        // intervalo entre tentativas
+        await new Promise((r) => setTimeout(r, intervalMs));
+      }
+
+      if (!matched) {
+        alert("😕 Não foi possível reconhecer o rosto. Tente novamente com mais luz e olhando para a câmera.");
+      }
+    } catch (err) {
+      console.error("Erro durante reconhecimento ao vivo:", err);
+      alert("Erro ao acessar a câmera ou durante o reconhecimento. Veja o console para detalhes.");
+    } finally {
+      // cleanup: parar stream e remover vídeo
+      try {
+        if (stream) stream.getTracks().forEach((t) => t.stop());
+        if (video && video.parentNode) video.parentNode.removeChild(video);
+      } catch (err) {
+        console.warn("Erro no cleanup da câmera:", err);
+      }
+    }
+  };
+
+  // botão chama esta função
   const requestPunchWithFace = async () => {
-    if (isAdmin) return onVerifyPunchSuccess();
-    if (!funcData?.faceDescriptor) return alert("⚠️ Nenhuma foto de referência cadastrada!");
-    setMode("verify-punch");
+    if (!funcData) {
+      alert("Dados do funcionário ainda não carregados. Aguarde um pouco.");
+      return;
+    }
+    // abre a rotina de reconhecimento (isso abre/carega a câmera e roda a verificação)
+    await performLiveRecognitionAndPunch({ attemptsTimeout: 9000, intervalMs: 900 });
   };
 
   const handleUploadAtestado = async (dayId, file) => {
@@ -393,13 +452,7 @@ const verifyLiveAgainstReference = async (dataUrl) => {
             {funcData?.nome}
           </Typography>
           {isAdmin && (
-            <Button
-              variant="contained"
-              color="warning"
-              startIcon={<AddAPhotoIcon />}
-              sx={{ mt: 2 }}
-              onClick={() => setMode("enroll")}
-            >
+            <Button variant="contained" color="warning" startIcon={<AddAPhotoIcon />} sx={{ mt: 2 }} onClick={() => setMode("enroll")}>
               Atualizar Foto
             </Button>
           )}
@@ -407,97 +460,43 @@ const verifyLiveAgainstReference = async (dataUrl) => {
 
         {mode === "enroll" && (
           <Paper sx={{ p: 2, bgcolor: "#2a2a2a", borderRadius: 2, textAlign: "center" }}>
-            <Typography mb={1} sx={{ color: "#fff" }}>Capture uma foto de referência</Typography>
-            <WebcamCapture captureLabel="Salvar foto" onCapture={async (blob, dataUrl) => {
-              try {
-                if (!isAdmin) return alert("Apenas admin pode cadastrar foto.");
-                const imageUrl = await uploadImage(blob);
-                const imgEl = await createImageElementFromDataUrl(dataUrl);
-                const desc = await getFaceDescriptorFromMedia(imgEl);
-                if (!desc) return alert("Rosto não detectado.");
-                await updateDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId), {
-                  fotoReferencia: imageUrl,
-                  faceDescriptor: descriptorToArray(desc),
-                });
-                await carregarFuncionario();
-                alert("Foto salva!");
-                setMode("view");
-              } catch (err) {
-                console.error("Erro enroll:", err);
-                alert("Erro ao salvar foto.");
-              }
-            }} facingMode="user" />
-            <Button startIcon={<CancelIcon />} variant="outlined" color="inherit" sx={{ mt: 2 }} onClick={() => setMode("view")}>Cancelar</Button>
+            <Typography mb={1} sx={{ color: "#fff" }}>
+              Capture uma foto de referência
+            </Typography>
+            <WebcamCapture
+              captureLabel="Salvar foto"
+              onCapture={async (blob, dataUrl) => {
+                try {
+                  if (!isAdmin) return alert("Apenas admin pode cadastrar foto.");
+                  const imageUrl = await uploadImage(blob);
+                  const imgEl = await createImageElementFromDataUrl(dataUrl);
+                  const desc = await getFaceDescriptorFromMedia(imgEl);
+                  if (!desc) return alert("Rosto não detectado.");
+                  await updateDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId), {
+                    fotoReferencia: imageUrl,
+                    faceDescriptor: descriptorToArray(desc),
+                  });
+                  await carregarFuncionario();
+                  alert("Foto salva!");
+                  setMode("view");
+                } catch (err) {
+                  console.error("Erro enroll:", err);
+                  alert("Erro ao salvar foto.");
+                }
+              }}
+              facingMode="user"
+            />
+            <Button startIcon={<CancelIcon />} variant="outlined" color="inherit" sx={{ mt: 2 }} onClick={() => setMode("view")}>
+              Cancelar
+            </Button>
           </Paper>
         )}
 
-        {mode === "verify-punch" && (
-  <Paper sx={{ p: 2, bgcolor: "#2a2a2a", borderRadius: 2, textAlign: "center" }}>
-    <Typography mb={1} sx={{ color: "#fff" }}>
-      Posicione o rosto — a verificação será feita automaticamente
-    </Typography>
-
-    <WebcamCapture
-  autoCapture
-  hideControls
-  facingMode="user"
-  frameInterval={800}
-  onFrame={async (blob, dataUrl) => {
-    try {
-      // capturar e verificar cada frame
-      const img = await createImageElementFromDataUrl(dataUrl);
-      if (!img) return false;
-
-      const liveDesc = await getFaceDescriptorFromMedia(img);
-      if (!liveDesc) return false;
-
-      if (!funcData?.faceDescriptor) return false;
-
-      const storedDesc = arrayToDescriptor(funcData.faceDescriptor);
-      const { match, distance } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
-
-      console.log("🔍 match:", match, "distância:", distance?.toFixed?.(3));
-
-      if (match) {
-        console.log("✅ Rosto reconhecido, registrando ponto...");
-        await onVerifyPunchSuccess();
-        setMode("view");
-        return true; // encerra loop automático
-      }
-    } catch (err) {
-      console.warn("Erro no reconhecimento automático:", err);
-    }
-
-    return false; // continua tentando
-  }}
-/>
-
-
-    <Button
-      startIcon={<CancelIcon />}
-      variant="outlined"
-      color="inherit"
-      sx={{ mt: 2 }}
-      onClick={() => setMode("view")}
-    >
-      Cancelar
-    </Button>
-  </Paper>
-)}
-
-        {mode === "view" && (
-          <Box textAlign="center" mt={2}>
-            <Button
-              variant="contained"
-              color="success"
-              startIcon={<CameraAltIcon />}
-              onClick={requestPunchWithFace}
-              fullWidth
-            >
-              Bater Ponto
-            </Button>
-          </Box>
-        )}
+        <Box textAlign="center" mt={2}>
+          <Button variant="contained" color="success" startIcon={<CameraAltIcon />} onClick={requestPunchWithFace} fullWidth>
+            Bater Ponto
+          </Button>
+        </Box>
 
         <Divider sx={{ my: 3, bgcolor: "#333" }} />
 
@@ -508,9 +507,7 @@ const verifyLiveAgainstReference = async (dataUrl) => {
         {months.map((month) => (
           <Accordion key={month.monthKey} defaultExpanded={month.monthKey === currentMonthKey} sx={{ bgcolor: "#1a1a1a", color: "white", mb: 1 }}>
             <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: "#fff" }} />}>
-              <Typography sx={{ textTransform: "capitalize" }}>
-                {month.label} — ⏱️ {minutesToHHMM(month.totalMinutes)}
-              </Typography>
+              <Typography sx={{ textTransform: "capitalize" }}>{month.label} — ⏱️ {minutesToHHMM(month.totalMinutes)}</Typography>
             </AccordionSummary>
             <AccordionDetails>
               <Grid container spacing={1}>
@@ -519,19 +516,10 @@ const verifyLiveAgainstReference = async (dataUrl) => {
                     <Paper sx={{ p: 1.5, bgcolor: "#252525", borderRadius: 2 }}>
                       <Stack direction="row" justifyContent="space-between" alignItems="center">
                         <Typography sx={{ color: "#fff" }}>{p.id}</Typography>
-                        <Chip
-                          label={`${statusEmojis[p.status] || "❔"} ${p.status}`}
-                          size="small"
-                          sx={{
-                            bgcolor: "#333",
-                            color: "white",
-                            fontWeight: "bold",
-                          }}
-                        />
+                        <Chip label={`${p.status || "OK"}`} size="small" sx={{ bgcolor: "#333", color: "white", fontWeight: "bold" }} />
                       </Stack>
                       <Typography variant="body2" color="#bbb" sx={{ mt: 1 }}>
-                        Entrada: {p.entrada || "-"} | Saída Intervalo: {p.intervaloSaida || "-"} | Volta:{" "}
-                        {p.intervaloVolta || "-"} | Saída: {p.saida || "-"}
+                        Entrada: {p.entrada || "-"} | Saída Intervalo: {p.intervaloSaida || "-"} | Volta: {p.intervaloVolta || "-"} | Saída: {p.saida || "-"}
                       </Typography>
                       <Typography variant="body2" color="#999" sx={{ mt: 0.5 }}>
                         ⏰ Total: {minutesToHHMM(calcMinutesWorkedForDay(p))}
@@ -544,26 +532,13 @@ const verifyLiveAgainstReference = async (dataUrl) => {
                         </Box>
                       )}
                       <Stack direction="row" spacing={1} mt={1}>
-                        <Button
-                          variant="outlined"
-                          color="info"
-                          component="label"
-                          size="small"
-                          startIcon={<PhotoCamera />}
-                        >
+                        <Button variant="outlined" color="info" component="label" size="small" startIcon={<PhotoCamera />}>
                           Enviar Atestado
-                          <input
-                            hidden
-                            type="file"
-                            accept="image/*,application/pdf"
-                            onChange={(e) => handleUploadAtestado(p.id, e.target.files[0])}
-                          />
+                          <input hidden type="file" accept="image/*,application/pdf" onChange={(e) => handleUploadAtestado(p.id, e.target.files[0])} />
                         </Button>
-                        {isAdmin && (
-                          <IconButton color="error" onClick={() => handleExcluirPonto(p.id)}>
-                            <DeleteForeverIcon />
-                          </IconButton>
-                        )}
+                        <IconButton color="error" onClick={() => handleExcluirPonto(p.id)}>
+                          <DeleteForeverIcon />
+                        </IconButton>
                       </Stack>
                     </Paper>
                   </Grid>
