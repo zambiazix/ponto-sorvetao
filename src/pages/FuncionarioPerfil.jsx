@@ -438,55 +438,40 @@ const verifyLiveAgainstReference = async (dataUrl) => {
     </Typography>
 
     <WebcamCapture
-      autoCapture
-      hideControls
-      facingMode="user"
-      frameInterval={1000} // captura 1 frame/segundo
-      onFrame={async (blob, dataUrl) => {
-        if (verificando) return false;
-        setVerificando(true);
+  autoCapture
+  hideControls
+  facingMode="user"
+  frameInterval={800}
+  onFrame={async (blob, dataUrl) => {
+    try {
+      // capturar e verificar cada frame
+      const img = await createImageElementFromDataUrl(dataUrl);
+      if (!img) return false;
 
-        try {
-          const img = await createImageElementFromDataUrl(dataUrl);
-          if (!img) {
-            console.log("❌ Nenhuma imagem válida neste frame.");
-            return false;
-          }
+      const liveDesc = await getFaceDescriptorFromMedia(img);
+      if (!liveDesc) return false;
 
-          const liveDesc = await getFaceDescriptorFromMedia(img);
-          if (!liveDesc) {
-            console.log("❌ Nenhum rosto detectado neste frame.");
-            return false;
-          }
+      if (!funcData?.faceDescriptor) return false;
 
-          if (!funcData?.faceDescriptor) {
-            console.log("⚠️ Sem faceDescriptor cadastrado.");
-            return false;
-          }
+      const storedDesc = arrayToDescriptor(funcData.faceDescriptor);
+      const { match, distance } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
 
-          const storedDesc = arrayToDescriptor(funcData.faceDescriptor);
-          const { match, distance } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
+      console.log("🔍 match:", match, "distância:", distance?.toFixed?.(3));
 
-          console.log("🔍 match:", match, "distância:", distance?.toFixed?.(3));
+      if (match) {
+        console.log("✅ Rosto reconhecido, registrando ponto...");
+        await onVerifyPunchSuccess();
+        setMode("view");
+        return true; // encerra loop automático
+      }
+    } catch (err) {
+      console.warn("Erro no reconhecimento automático:", err);
+    }
 
-          if (match) {
-            console.log("✅ Reconhecido — registrando ponto...");
-            await onVerifyPunchSuccess();
-            setMode("view");
-            return true; // <- ENCERRA o loop automaticamente
-          }
+    return false; // continua tentando
+  }}
+/>
 
-          // continua tentando se não der match
-          return false;
-        } catch (err) {
-          console.warn("Erro no reconhecimento automático:", err);
-          return false;
-        } finally {
-          // libera para o próximo frame
-          setTimeout(() => setVerificando(false), 500);
-        }
-      }}
-    />
 
     <Button
       startIcon={<CancelIcon />}
