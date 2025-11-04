@@ -23,6 +23,8 @@
     "face-api.js": "^0.22.2",
     "firebase": "^12.4.0",
     "firebase-admin": "^13.5.0",
+    "jspdf": "^3.0.3",
+    "jspdf-autotable": "^5.0.2",
     "lucide-react": "^0.548.0",
     "node-cron": "^4.2.1",
     "react": "^19.1.1",

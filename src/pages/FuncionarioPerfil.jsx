@@ -1,17 +1,17 @@
 // src/pages/FuncionarioPerfil.jsx
+import React, { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useState, useEffect } from "react";
-import { auth, db } from "../services/firebase";
 import {
   collection,
   doc,
   getDoc,
-  setDoc,
   getDocs,
+  setDoc,
   updateDoc,
-  serverTimestamp,
   deleteDoc,
+  serverTimestamp,
 } from "firebase/firestore";
+import { auth, db } from "../services/firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import {
   Container,
@@ -29,6 +29,7 @@ import {
   AccordionDetails,
   Chip,
   IconButton,
+  TextField,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
@@ -41,6 +42,7 @@ import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import { uploadImage } from "../services/cloudinary";
 import WebcamCapture from "../components/WebcamCapture";
 import * as faceapi from "@vladmandic/face-api";
+
 import {
   loadFaceApiModels,
   getFaceDescriptorFromMedia,
@@ -50,9 +52,16 @@ import {
   createImageElementFromDataUrl,
 } from "../utils/faceRecognition";
 
+// PDF libs
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+
 const ADMIN_UID = "mD3ie8YGmgaup2VVDpKuMBltXgp2";
 const THRESHOLD = 0.55;
 const BRAZIL_TZ = "America/Sao_Paulo";
+
+// localStorage key for regional holidays config
+const LS_KEY_REGIONAIS = "ponto_feriados_regionais_v1";
 
 export default function FuncionarioPerfil() {
   const { lojaId, funcionarioId } = useParams();
@@ -65,6 +74,10 @@ export default function FuncionarioPerfil() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [carregando, setCarregando] = useState(true);
   const [uploadingAtestado, setUploadingAtestado] = useState(false);
+
+  // UI state for regional holidays text area
+  const [regionalHolidaysText, setRegionalHolidaysText] = useState("");
+  const [regionalHolidaysParsed, setRegionalHolidaysParsed] = useState([]);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
@@ -82,7 +95,9 @@ export default function FuncionarioPerfil() {
         // garante nets do faceapi (fallback)
         const MODEL_URL = "/models";
         if (!faceapi.nets.ssdMobilenetv1.params) {
-          console.log("FUNC-PERF: faceapi.nets não carregados — carregando via faceapi.loadFromUri...");
+          console.log(
+            "FUNC-PERF: faceapi.nets não carregados — carregando via faceapi.loadFromUri..."
+          );
           await Promise.all([
             faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
             faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
@@ -97,9 +112,51 @@ export default function FuncionarioPerfil() {
       await carregarFuncionario();
       await carregarPontos();
       await verificarFolgaAutomatica();
+      // load regionais from localStorage
+      loadRegionaisFromStorage();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lojaId, funcionarioId]);
+
+  const loadRegionaisFromStorage = () => {
+    try {
+      const raw = localStorage.getItem(LS_KEY_REGIONAIS);
+      if (raw) {
+        setRegionalHolidaysText(raw);
+        const parsed = parseRegionalHolidaysText(raw);
+        setRegionalHolidaysParsed(parsed);
+      } else {
+        // default empty
+        setRegionalHolidaysText("");
+        setRegionalHolidaysParsed([]);
+      }
+    } catch (err) {
+      console.warn("Erro ao carregar feriados regionais do localStorage:", err);
+    }
+  };
+
+  const saveRegionaisToStorage = (text) => {
+    try {
+      localStorage.setItem(LS_KEY_REGIONAIS, text || "");
+      setRegionalHolidaysText(text || "");
+      const parsed = parseRegionalHolidaysText(text || "");
+      setRegionalHolidaysParsed(parsed);
+      alert("Feriados regionais salvos (localStorage).");
+    } catch (err) {
+      console.warn("Erro ao salvar feriados regionais:", err);
+      alert("Erro ao salvar feriados regionais no navegador.");
+    }
+  };
+
+  const clearRegionais = () => {
+    try {
+      localStorage.removeItem(LS_KEY_REGIONAIS);
+      setRegionalHolidaysText("");
+      setRegionalHolidaysParsed([]);
+    } catch (err) {
+      console.warn("Erro ao limpar feriados regionais:", err);
+    }
+  };
 
   const carregarLoja = async () => {
     try {
@@ -112,11 +169,16 @@ export default function FuncionarioPerfil() {
 
   const carregarFuncionario = async () => {
     try {
-      const funcSnap = await getDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId));
+      const funcSnap = await getDoc(
+        doc(db, "lojas", lojaId, "funcionarios", funcionarioId)
+      );
       if (funcSnap.exists()) {
         const d = funcSnap.data();
         setFuncData(d);
-        console.log("FUNC-PERF: Dados do funcionário carregados:", { id: funcionarioId, ...d });
+        console.log("FUNC-PERF: Dados do funcionário carregados:", {
+          id: funcionarioId,
+          ...d,
+        });
       } else {
         console.warn("FUNC-PERF: Funcionário não encontrado no Firestore.");
       }
@@ -145,13 +207,16 @@ export default function FuncionarioPerfil() {
 
   const getHojeId = () => {
     try {
-      const hoje = new Intl.DateTimeFormat("en-CA", { timeZone: BRAZIL_TZ }).format(new Date());
+      const hoje = new Intl.DateTimeFormat("en-CA", { timeZone: BRAZIL_TZ }).format(
+        new Date()
+      );
       if (/^\d{4}-\d{2}-\d{2}$/.test(hoje)) return hoje;
     } catch (err) {}
     const agora = new Date();
-    return `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, "0")}-${String(
-      agora.getDate()
-    ).padStart(2, "0")}`;
+    return `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(
+      2,
+      "0"
+    )}-${String(agora.getDate()).padStart(2, "0")}`;
   };
 
   const getHoraAtualLocal = () => {
@@ -172,10 +237,20 @@ export default function FuncionarioPerfil() {
 
   const verificarFolgaAutomatica = async () => {
     try {
-      const agoraSP = new Date(new Date().toLocaleString("en-US", { timeZone: BRAZIL_TZ }));
+      const agoraSP = new Date(
+        new Date().toLocaleString("en-US", { timeZone: BRAZIL_TZ })
+      );
       if (agoraSP.getHours() < 16) return;
       const hoje = getHojeId();
-      const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", hoje);
+      const docRef = doc(
+        db,
+        "lojas",
+        lojaId,
+        "funcionarios",
+        funcionarioId,
+        "pontos",
+        hoje
+      );
       let snap;
       try {
         snap = await getDoc(docRef, { source: "server" });
@@ -194,7 +269,15 @@ export default function FuncionarioPerfil() {
   const onVerifyPunchSuccess = async () => {
     try {
       const hoje = getHojeId();
-      const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", hoje);
+      const docRef = doc(
+        db,
+        "lojas",
+        lojaId,
+        "funcionarios",
+        funcionarioId,
+        "pontos",
+        hoje
+      );
       let snap;
       try {
         snap = await getDoc(docRef, { source: "server" });
@@ -334,7 +417,6 @@ export default function FuncionarioPerfil() {
             const ctx = canvas.getContext("2d");
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             const dataUrl = canvas.toDataURL("image/jpeg");
-            // libera canvas da memória logo depois
             // console debug
             console.log("FUNC-PERF: nenhum detection direto — executando fallback via canvas -> dataURL");
             const imgEl = await createImageElementFromDataUrl(dataUrl);
@@ -400,10 +482,13 @@ export default function FuncionarioPerfil() {
     try {
       setUploadingAtestado(true);
       const url = await uploadImage(file);
-      await updateDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId), {
-        atestadoUrl: url,
-        atestadoUploadedAt: serverTimestamp(),
-      });
+      await updateDoc(
+        doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId),
+        {
+          atestadoUrl: url,
+          atestadoUploadedAt: serverTimestamp(),
+        }
+      );
       await carregarPontos();
       alert("📄 Atestado enviado com sucesso!");
     } catch {
@@ -417,7 +502,9 @@ export default function FuncionarioPerfil() {
     if (!isAdmin) return alert("Somente o administrador pode excluir pontos.");
     if (!window.confirm("Excluir este dia e todos os dados associados?")) return;
     try {
-      await deleteDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId));
+      await deleteDoc(
+        doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId)
+      );
       await carregarPontos();
       alert("🗑️ Ponto excluído com sucesso!");
     } catch {
@@ -464,6 +551,235 @@ export default function FuncionarioPerfil() {
       .map(([monthKey, v]) => ({ monthKey, ...v }));
   };
 
+  // ============================
+  // Helpers: parse regional holidays text
+  // ============================
+  // Accepts lines like:
+  // YYYY-MM-DD - Nome do feriado
+  // DD/MM - Nome do feriado
+  // DD/MM/YYYY - Nome do feriado
+  // or just the date (no name)
+  const parseRegionalHolidaysText = (text) => {
+    if (!text) return [];
+    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+    const out = [];
+    for (const line of lines) {
+      // try "date - name"
+      const parts = line.split("-");
+      const datePart = parts[0].trim();
+      const namePart = parts.slice(1).join("-").trim() || "Feriado Local";
+
+      // detect iso YYYY-MM-DD
+      if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
+        out.push({ dateIso: datePart, date: formatDateToDDMM(datePart), name: namePart });
+        continue;
+      }
+      // detect dd/mm or dd/mm/yyyy
+      if (/^\d{2}\/\d{2}(\/\d{4})?$/.test(datePart)) {
+        // if no year, keep as dd/mm format (dateIso null)
+        if (/^\d{2}\/\d{2}$/.test(datePart)) {
+          out.push({ dateIso: null, date: datePart, name: namePart });
+        } else {
+          // dd/mm/yyyy -> convert to ISO
+          const [dd, mm, yyyy] = datePart.split("/");
+          const iso = `${yyyy}-${mm}-${dd}`;
+          out.push({ dateIso: iso, date: formatDateToDDMM(iso), name: namePart });
+        }
+        continue;
+      }
+      // fallback: ignore or try parseable date
+      try {
+        const d = new Date(datePart);
+        if (!isNaN(d.getTime())) {
+          const iso = d.toISOString().slice(0, 10);
+          out.push({ dateIso: iso, date: formatDateToDDMM(iso), name: namePart });
+        }
+      } catch {}
+    }
+    return out;
+  };
+
+  // Convert YYYY-MM-DD -> DD/MM
+  const formatDateToDDMM = (isoDate) => {
+    try {
+      const d = new Date(isoDate + "T00:00:00");
+      const dd = String(d.getDate()).padStart(2, "0");
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      return `${dd}/${mm}`;
+    } catch {
+      return isoDate;
+    }
+  };
+
+  // ============================
+  // gerarRelatorio (PDF)
+  // ============================
+  const gerarRelatorio = async (monthObj) => {
+    try {
+      // monthObj.monthKey = "YYYY-MM"
+      const [yearStr, monthStr] = monthObj.monthKey.split("-");
+      const ano = Number(yearStr);
+      const mesIndex = Number(monthStr) - 1; // 0-based
+      const nomeMes = new Date(ano, mesIndex, 1).toLocaleString("pt-BR", { month: "long", year: "numeric" });
+      const funcionario = funcData || {};
+      const loja = lojaNome || lojaId;
+
+      // 1) buscar feriados nacionais pelo ano (BrasilAPI)
+      let feriadosNacionais = [];
+      try {
+        const resp = await fetch(`https://brasilapi.com.br/api/feriados/v1/${ano}`);
+        if (resp.ok) {
+          const json = await resp.json();
+          // json tem objetos com date (YYYY-MM-DD) e name
+          feriadosNacionais = json.map((f) => ({
+            dateIso: f.date, // YYYY-MM-DD
+            date: formatDateToDDMM(f.date),
+            name: f.name,
+          }));
+        } else {
+          console.warn("gerarRelatorio: BrasilAPI retornou não-ok:", resp.status);
+        }
+      } catch (err) {
+        console.warn("gerarRelatorio: falha ao buscar feriados nacionais:", err);
+      }
+
+      // 2) usar feriados regionais do estado (texto do usuário)
+      const feriadosRegionaisFromText = parseRegionalHolidaysText(regionalHolidaysText);
+
+      // 3) juntar feriados: nacionais + regionais (regionais podem ter dateIso or dd/mm)
+      const todosFeriados = [...feriadosNacionais, ...feriadosRegionaisFromText];
+
+      // 4) tabela: para cada dia presente em monthObj.days (que são os pontos desse mês)
+      const rows = [];
+      let totalMinutesMonth = 0;
+      // garantir ordenação por dia asc
+      const daysSorted = [...monthObj.days].sort((a, b) => a.id.localeCompare(b.id));
+      for (const p of daysSorted) {
+        // p.id é YYYY-MM-DD
+        const iso = p.id;
+        const dateObj = new Date(iso + "T00:00:00");
+        const dataFormatada = iso.split("-").reverse().join("/"); // dd/mm/yyyy
+        const weekday = dateObj.toLocaleDateString("pt-BR", { weekday: "long" });
+        const ddmm = formatDateToDDMM(iso);
+
+        // procura matching feriado: prefer iso exact match, fallback by dd/mm
+        const feriadoMatchIso = todosFeriados.find((f) => f.dateIso === iso);
+        const feriadoMatchDDMM = todosFeriados.find((f) => f.date === ddmm && !f.dateIso);
+        const feriadoMatch = feriadoMatchIso || feriadoMatchDDMM;
+
+        const diaLabel = feriadoMatch ? `${capitalize(weekday)} (Feriado)` : capitalize(weekday);
+
+        // Se existir status diferente de OK e existir, mostra o status em todas as colunas (como pediu)
+        let entradaCell = p.entrada || "-";
+        let saidaIntCell = p.intervaloSaida || "-";
+        let voltaIntCell = p.intervaloVolta || "-";
+        let saidaCell = p.saida || "-";
+
+        if (p.status && p.status !== "OK") {
+          // mostra status em todas colunas (conforme pedido do exemplo)
+          entradaCell = saidaIntCell = voltaIntCell = saidaCell = p.status;
+        }
+
+        // calcula total minutos do dia (mesmo se status diferente — só soma quando houver horários)
+        const minutosDia = calcMinutesWorkedForDay(p);
+        totalMinutesMonth += minutosDia;
+
+        rows.push([
+          dataFormatada,
+          diaLabel,
+          entradaCell,
+          saidaIntCell,
+          voltaIntCell,
+          saidaCell,
+        ]);
+      }
+
+      // 5) gera PDF com jsPDF + autotable
+      const doc = new jsPDF({
+        unit: "pt",
+        format: "a4",
+      });
+
+      doc.setFontSize(16);
+      doc.text("Relatório Mensal de Pontos", 40, 50);
+      doc.setFontSize(11);
+      doc.text(`Funcionário: ${funcionario.nome || "-"}`, 40, 72);
+      doc.text(`Loja: ${loja}`, 40, 88);
+      doc.text(`Mês de referência: ${capitalize(nomeMes)}`, 40, 104);
+
+      // tabela
+      autoTable(doc, {
+        startY: 125,
+        head: [["Data", "Dia", "Entrada", "Saída Int.", "Volta Int.", "Saída"]],
+        body: rows,
+        theme: "grid",
+        headStyles: { fillColor: [41, 128, 185] },
+        styles: { fontSize: 10, cellPadding: 6 },
+        margin: { left: 40, right: 40 },
+      });
+
+      // adiciona lista de feriados regionais (se houver) antes do total
+      const finalY = doc.lastAutoTable ? doc.lastAutoTable.finalY : 140;
+      let offset = finalY + 20;
+      // filtra feriados que pertencem ao mês do relatório
+      const feriadosNoMes = todosFeriados.filter((f) => {
+        // if has dateIso -> check year/month
+        if (f.dateIso) {
+          return f.dateIso.startsWith(`${ano}-${String(mesIndex + 1).padStart(2, "0")}`);
+        }
+        // if only dd/mm -> check dd/mm against month
+        if (f.date) {
+          const parts = f.date.split("/");
+          if (parts.length >= 2) {
+            const mm = parts[1];
+            return mm === String(mesIndex + 1).padStart(2, "0");
+          }
+        }
+        return false;
+      });
+
+      if (feriadosNoMes.length > 0) {
+        doc.setFontSize(12);
+        doc.text("Feriados no mês:", 40, offset);
+        offset += 16;
+        doc.setFontSize(10);
+        feriadosNoMes.forEach((f) => {
+          const label = `${f.date}${f.name ? " — " + f.name : ""}`;
+          doc.text(label, 50, offset);
+          offset += 14;
+        });
+      }
+
+      // total horas
+      const totalHH = Math.floor(totalMinutesMonth / 60);
+      const totalMM = totalMinutesMonth % 60;
+      const totalTexto = `${totalHH}h ${totalMM}m`;
+
+      doc.setFontSize(12);
+      doc.text(`Total de horas trabalhadas no mês: ${totalTexto}`, 40, offset + 24);
+
+      // salvar - padrão de nome solicitado
+      const nomeArquivo = `Relatorio_${capitalize(nomeMes).replace(/\s+/g, "")}_${funcionario.nome ? slugify(funcionario.nome) : funcionarioId}.pdf`;
+      doc.save(nomeArquivo);
+    } catch (err) {
+      console.error("gerarRelatorio: erro:", err);
+      alert("Erro ao gerar relatório. Veja o console para detalhes.");
+    }
+  };
+
+  // helpers
+  function capitalize(s) {
+    if (!s) return s;
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+
+  function slugify(s) {
+    return s ? s.toLowerCase().replace(/\s+/g, "_").replace(/[^\w_-]/g, "") : "funcionario";
+  }
+
+  // ============================
+  // UI render
+  // ============================
   if (carregando)
     return (
       <Container
@@ -571,6 +887,40 @@ export default function FuncionarioPerfil() {
 
         <Divider sx={{ my: 3, bgcolor: "#333" }} />
 
+        {/* CONFIG UI: Feriados Regionais */}
+        {isAdmin && (
+          <Paper sx={{ p: 2, mb: 2, bgcolor: "#222", borderRadius: 2 }}>
+            <Typography variant="subtitle1" sx={{ color: "#fff", mb: 1 }}>
+              Feriados Regionais (configuração)
+            </Typography>
+            <Typography variant="caption" color="#bbb" sx={{ display: "block", mb: 1 }}>
+              Formatos por linha: <code>YYYY-MM-DD - Nome</code> ou <code>DD/MM - Nome</code> ou <code>DD/MM/YYYY - Nome</code>.
+            </Typography>
+            <TextField
+              multiline
+              minRows={3}
+              maxRows={8}
+              value={regionalHolidaysText}
+              onChange={(e) => setRegionalHolidaysText(e.target.value)}
+              placeholder={"Ex:\n2025-10-31 - Feriado de Lajeado\n25/12 - Natal"}
+              fullWidth
+              sx={{ mb: 1 }}
+              InputProps={{ style: { backgroundColor: "#1a1a1a", color: "white" } }}
+            />
+            <Stack direction="row" spacing={1}>
+              <Button variant="contained" size="small" onClick={() => saveRegionaisToStorage(regionalHolidaysText)}>
+                Salvar
+              </Button>
+              <Button variant="outlined" size="small" onClick={() => { loadRegionaisFromStorage(); alert("Restaurado das configurações salvas."); }}>
+                Restaurar Salvo
+              </Button>
+              <Button variant="outlined" size="small" onClick={() => { clearRegionais(); alert("Feriados regionais limpos."); }}>
+                Limpar
+              </Button>
+            </Stack>
+          </Paper>
+        )}
+
         <Typography variant="h6" mb={2} sx={{ color: "#fff", display: "flex", alignItems: "center", gap: 1 }}>
           Histórico de Pontos
         </Typography>
@@ -578,7 +928,18 @@ export default function FuncionarioPerfil() {
         {months.map((month) => (
           <Accordion key={month.monthKey} defaultExpanded={month.monthKey === currentMonthKey} sx={{ bgcolor: "#1a1a1a", color: "white", mb: 1 }}>
             <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: "#fff" }} />}>
-              <Typography sx={{ textTransform: "capitalize" }}>{month.label} — ⏱️ {minutesToHHMM(month.totalMinutes)}</Typography>
+              <Box sx={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2 }}>
+                <Typography sx={{ textTransform: "capitalize" }}>{month.label} — ⏱️ {minutesToHHMM(month.totalMinutes)}</Typography>
+                {isAdmin ? (
+                  <Button variant="outlined" size="small" onClick={() => gerarRelatorio(month)}>
+                    Gerar Relatório
+                  </Button>
+                ) : (
+                  <Button variant="outlined" size="small" disabled>
+                    Gerar Relatório
+                  </Button>
+                )}
+              </Box>
             </AccordionSummary>
             <AccordionDetails>
               <Grid container spacing={1}>
@@ -621,4 +982,49 @@ export default function FuncionarioPerfil() {
       </Paper>
     </Container>
   );
+}
+
+// ---------------------------
+// Additional helpers (outside component)
+// ---------------------------
+
+// Converte minutos para formato HH:MM
+function minutesToHHMM(minutos) {
+  const h = Math.floor(minutos / 60);
+  const m = Math.round(minutos % 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+// Helpers reuse (same logic as inside)
+function calcMinutesWorkedForDay(p) {
+  const toMinutesLocal = (t) => {
+    if (!t) return null;
+    const [h, m] = t.split(":").map(Number);
+    return h * 60 + m;
+  };
+  const e = toMinutesLocal(p.entrada),
+    isOut = toMinutesLocal(p.intervaloSaida),
+    iv = toMinutesLocal(p.intervaloVolta),
+    s = toMinutesLocal(p.saida);
+  let total = 0;
+  if (e && isOut && isOut > e) total += isOut - e;
+  if (iv && s && s > iv) total += s - iv;
+  return total;
+}
+
+// groupByMonth for outside helper usage if needed
+function groupByMonth(pontosList) {
+  const map = new Map();
+  pontosList.forEach((p) => {
+    const date = new Date(p.id + "T00:00:00");
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+    const label = new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(date);
+    if (!map.has(key)) map.set(key, { label, days: [], totalMinutes: 0 });
+    const entry = map.get(key);
+    entry.days.push(p);
+    entry.totalMinutes += calcMinutesWorkedForDay(p);
+  });
+  return Array.from(map.entries())
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+    .map(([monthKey, v]) => ({ monthKey, ...v }));
 }
