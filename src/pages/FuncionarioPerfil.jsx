@@ -802,24 +802,39 @@ const mediaStreamRef = useRef(null);
   // NEW: capture functions (inline enroll)
   // ============================
   // 📸 Abre a câmera e exibe o vídeo
+// 📸 Abre a câmera e exibe o vídeo (versão segura)
 const openCameraForCapture = async () => {
   try {
+    // Garante que qualquer stream anterior foi limpo
+    stopCaptureStream();
+    setCapturedPhoto(null);
+
+    // Garante que o componente de vídeo será renderizado antes de acessar a ref
+    setCapturingPhoto(true);
+
+    // Aguarda o React renderizar o vídeo no DOM
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Solicita acesso à câmera
     const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+
     if (videoRef.current) {
       videoRef.current.srcObject = stream;
-      setCapturingPhoto(true);
-
-      // Espera o vídeo carregar completamente
       await new Promise((resolve) => {
         videoRef.current.onloadedmetadata = () => {
           videoRef.current.play();
           resolve();
         };
       });
+    } else {
+      alert("Erro interno: vídeo não encontrado no DOM.");
+      stopCaptureStream();
+      return;
     }
   } catch (err) {
     console.error("Erro ao acessar a câmera:", err);
     alert("Não foi possível acessar a câmera. Verifique as permissões e tente novamente.");
+    stopCaptureStream();
   }
 };
 
