@@ -87,10 +87,12 @@ export default function FuncionarioPerfil() {
   const [regionalHolidaysParsed, setRegionalHolidaysParsed] = useState([]);
 
   // --- NEW: states for inline capture (enroll) ---
-  const [capturing, setCapturing] = useState(false); // whether capture UI is open
-  const [captureError, setCaptureError] = useState(null);
-  const videoRef = useRef(null);
-  const mediaStreamRef = useRef(null);
+// coloque com os outros useState
+const [capturing, setCapturing] = useState(false);
+const [captureError, setCaptureError] = useState(null);
+const [capturedPreview, setCapturedPreview] = useState(null); // <-- preview local da captura
+const videoRef = useRef(null);
+const mediaStreamRef = useRef(null);
 
   // --- NEW: states for edit modal ---
   const [editOpen, setEditOpen] = useState(false);
@@ -800,110 +802,160 @@ export default function FuncionarioPerfil() {
   // NEW: capture functions (inline enroll)
   // ============================
   const openCameraForCapture = async () => {
-    if (!isAdmin) {
-      alert("Apenas admin pode atualizar foto.");
-      return;
-    }
-    setCaptureError(null);
-    setCapturing(true);
+  if (!isAdmin) {
+    alert("Apenas admin pode atualizar foto.");
+    return;
+  }
+  setCaptureError(null);
+  setCapturedPreview(null);
+  setCapturing(true);
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-      mediaStreamRef.current = stream;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+    mediaStreamRef.current = stream;
 
-      if (videoRef.current) {
+    if (videoRef.current) {
+      try {
         videoRef.current.srcObject = stream;
-        await new Promise((res) => {
-          const onLoaded = () => {
-            videoRef.current.removeEventListener("loadeddata", onLoaded);
-            res();
-          };
-          videoRef.current.addEventListener("loadeddata", onLoaded);
-          setTimeout(res, 1200);
-        });
+      } catch (e) {
+        // navegador pode lançar ao setar srcObject; fallback abaixo
+        videoRef.current.src = window.URL.createObjectURL(stream);
       }
-    } catch (err) {
-      console.error("Erro ao abrir câmera para captura:", err);
-      setCaptureError("Não foi possível acessar a câmera. Verifique permissões.");
-      stopCaptureStream();
-      setCapturing(false);
-    }
-  };
 
-  const stopCaptureStream = () => {
-    try {
-      const s = mediaStreamRef.current;
-      if (s && s.getTracks) {
-        s.getTracks().forEach((t) => t.stop());
-      }
-    } catch (err) {
-      console.warn("Erro ao parar stream:", err);
-    } finally {
-      mediaStreamRef.current = null;
-      if (videoRef.current && videoRef.current.srcObject) {
-        try {
-          videoRef.current.srcObject = null;
-        } catch (e) {}
-      }
+      // garante que o autoplay carregue antes de permitir captura
+      await new Promise((res) => {
+        const onLoaded = () => {
+          if (videoRef.current) videoRef.current.removeEventListener("loadeddata", onLoaded);
+          // pequeno delay para garantir frame estável
+          setTimeout(res, 250);
+        };
+        videoRef.current.addEventListener("loadeddata", onLoaded);
+        // fallback timeout
+        setTimeout(res, 1500);
+      });
     }
-  };
-
-  const cancelCapture = () => {
+  } catch (err) {
+    console.error("Erro ao abrir câmera para captura:", err);
+    setCaptureError("Não foi possível acessar a câmera. Verifique permissões.");
     stopCaptureStream();
     setCapturing(false);
-    setCaptureError(null);
-  };
+  }
+};
 
-  const captureAndSavePhoto = async () => {
-    if (!mediaStreamRef.current) {
-      alert("Câmera não iniciada.");
-      return;
+const stopCaptureStream = () => {
+  try {
+    const s = mediaStreamRef.current;
+    if (s && s.getTracks) {
+      s.getTracks().forEach((t) => t.stop());
     }
-    try {
-      const videoEl = videoRef.current;
-      if (!videoEl) throw new Error("Video element ausente.");
-      const w = videoEl.videoWidth || 640;
-      const h = videoEl.videoHeight || 480;
-      const canvas = document.createElement("canvas");
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(videoEl, 0, 0, w, h);
-
-      const blob = await new Promise((res) =>
-        canvas.toBlob((b) => res(b), "image/jpeg", 0.9)
-      );
-      if (!blob) throw new Error("Falha ao converter imagem.");
-
-      stopCaptureStream();
-      setCapturing(false);
-
-      const imageUrl = await uploadImage(blob);
-      const dataUrl = canvas.toDataURL("image/jpeg");
-      const imgEl = await createImageElementFromDataUrl(dataUrl);
-      const desc = await getFaceDescriptorFromMedia(imgEl);
-      if (!desc) {
-        await updateDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId), {
-          fotoReferencia: imageUrl,
-        });
-        await carregarFuncionario();
-        alert("Foto salva, mas não foi possível extrair descriptor facial. Verifique a imagem e tente novamente.");
-        return;
+  } catch (err) {
+    console.warn("Erro ao parar stream:", err);
+  } finally {
+    mediaStreamRef.current = null;
+    if (videoRef.current) {
+      try {
+        // remove srcObject e src para evitar vazamento e liberar recurso
+        if ("srcObject" in videoRef.current) videoRef.current.srcObject = null;
+        videoRef.current.src = "";
+      } catch (e) {
+        // ignore
       }
+    }
+  }
+};
 
+const cancelCapture = () => {
+  stopCaptureStream();
+  setCapturing(false);
+  setCaptureError(null);
+  setCapturedPreview(null);
+};
+
+const captureAndSavePhoto = async () => {
+  if (!videoRef.current) {
+    alert("Video element ausente.");
+    return;
+  }
+  if (!mediaStreamRef.current) {
+    alert("Câmera não iniciada.");
+    return;
+  }
+
+  try {
+    // desenha frame atual
+    const videoEl = videoRef.current;
+    const w = videoEl.videoWidth || 640;
+    const h = videoEl.videoHeight || 480;
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(videoEl, 0, 0, w, h);
+
+    // pega dataURL para preview imediato
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+    setCapturedPreview(dataUrl); // mostra preview instantaneamente na UI
+
+    // converte pra blob (aguarda)
+    const blob = await new Promise((res) => canvas.toBlob((b) => res(b), "image/jpeg", 0.9));
+    if (!blob) throw new Error("Falha ao converter imagem.");
+
+    // IMPORTANTE: não paramos a stream ainda — deixamos até upload e update DB acontecerem
+    // Faz upload e atualiza Firestore
+    let imageUrl = null;
+    try {
+      // opcional: feedback para o usuário (ex: "Enviando...")
+      imageUrl = await uploadImage(blob); // await o upload
+    } catch (uploadErr) {
+      console.error("Erro no upload da imagem:", uploadErr);
+      throw new Error("Erro ao enviar imagem ao servidor.");
+    }
+
+    // atualiza doc do funcionário
+    try {
       await updateDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId), {
         fotoReferencia: imageUrl,
-        faceDescriptor: descriptorToArray(desc),
+        // faceDescriptor é gerado abaixo se conseguir extrair
       });
-      await carregarFuncionario();
-      alert("Foto salva com sucesso!");
-    } catch (err) {
-      console.error("Erro ao capturar/salvar foto:", err);
-      alert("Erro ao capturar/salvar foto. Veja console.");
-      stopCaptureStream();
-      setCapturing(false);
+      // atualiza o state localmente pra refletir imediatamente
+      setFuncData((prev) => ({ ...(prev || {}), fotoReferencia: imageUrl }));
+    } catch (dbErr) {
+      console.error("Erro ao salvar URL no Firestore:", dbErr);
+      // mesmo se falhar no DB, continuamos para tentar extrair descriptor e notificar
     }
-  };
+
+    // tenta extrair descriptor a partir do dataUrl (sem depender do upload)
+    try {
+      const imgEl = await createImageElementFromDataUrl(dataUrl);
+      const desc = await getFaceDescriptorFromMedia(imgEl);
+      if (desc) {
+        await updateDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId), {
+          faceDescriptor: descriptorToArray(desc),
+        });
+        // atualiza funcData local com faceDescriptor
+        setFuncData((prev) => ({ ...(prev || {}), faceDescriptor: descriptorToArray(desc) }));
+      } else {
+        console.warn("Não foi possível extrair descriptor da imagem capturada.");
+      }
+    } catch (descErr) {
+      console.warn("Erro ao extrair descriptor:", descErr);
+    }
+
+    // sucesso
+    alert("Foto salva com sucesso!");
+  } catch (err) {
+    console.error("Erro ao capturar/salvar foto:", err);
+    setCaptureError(err.message || "Erro ao capturar/salvar foto.");
+    alert("Erro ao capturar/salvar foto. Veja console.");
+  } finally {
+    // garantimos cleanup sempre
+    stopCaptureStream();
+    setCapturing(false);
+    // observação: mantemos capturedPreview para que o usuário veja o preview mesmo após fechar câmera
+    // se quiser que o preview vá embora após X segundos, podemos limpar aqui:
+    // setTimeout(() => setCapturedPreview(null), 5000);
+  }
+};
 
   // helpers
   function capitalize(s) {
@@ -985,45 +1037,52 @@ export default function FuncionarioPerfil() {
 
         {/* MODE === enroll: inline capture UI */}
         {mode === "enroll" && (
-          <Paper sx={{ p: 2, bgcolor: "#2a2a2a", borderRadius: 2, textAlign: "center" }}>
-            <Typography mb={1} sx={{ color: "#fff" }}>
-              Capture uma foto de referência (apenas 1 foto; a câmera fechará automaticamente após a captura)
-            </Typography>
+  <Paper sx={{ p: 2, bgcolor: "#2a2a2a", borderRadius: 2, textAlign: "center" }}>
+    <Typography mb={1} sx={{ color: "#fff" }}>
+      Capture uma foto de referência (apenas 1 foto; a câmera fechará automaticamente após a captura)
+    </Typography>
 
-            {capturing ? (
-              <>
-                <Box sx={{ display: "flex", justifyContent: "center", mb: 1 }}>
-                  <video
-                    ref={videoRef}
-                    style={{ width: 360, height: 270, borderRadius: 8, background: "#000", border: "2px solid #333" }}
-                    autoPlay
-                    playsInline
-                    muted
-                  />
-                </Box>
-                <Stack direction="row" spacing={1} justifyContent="center">
-                  <Button variant="contained" color="success" onClick={captureAndSavePhoto} startIcon={<CameraAltIcon />}>
-                    Capturar
-                  </Button>
-                  <Button variant="outlined" color="inherit" onClick={() => { cancelCapture(); setMode("view"); }}>
-                    Cancelar
-                  </Button>
-                </Stack>
-                {captureError && <Typography color="error" sx={{ mt: 1 }}>{captureError}</Typography>}
-              </>
-            ) : (
-              <>
-                <Typography variant="body2" color="#bbb" sx={{ mb: 1 }}>
-                  Clique em abrir câmera para iniciar. A câmera será fechada automaticamente após a captura.
-                </Typography>
-                <Stack direction="row" spacing={1} justifyContent="center">
-                  <Button variant="contained" onClick={openCameraForCapture} size="small">Abrir Câmera</Button>
-                  <Button variant="outlined" onClick={() => { setMode("view"); }} size="small">Cancelar</Button>
-                </Stack>
-              </>
-            )}
-          </Paper>
-        )}
+    {capturing ? (
+      <>
+        <Box sx={{ display: "flex", justifyContent: "center", mb: 1 }}>
+          <video
+            ref={videoRef}
+            style={{ width: 360, height: 270, borderRadius: 8, background: "#000", border: "2px solid #333" }}
+            autoPlay
+            playsInline
+            muted
+          />
+        </Box>
+        <Stack direction="row" spacing={1} justifyContent="center">
+          <Button variant="contained" color="success" onClick={captureAndSavePhoto} startIcon={<CameraAltIcon />}>
+            Capturar
+          </Button>
+          <Button variant="outlined" color="inherit" onClick={() => { cancelCapture(); setMode("view"); }}>
+            Cancelar
+          </Button>
+        </Stack>
+        {captureError && <Typography color="error" sx={{ mt: 1 }}>{captureError}</Typography>}
+      </>
+    ) : (
+      <>
+        <Typography variant="body2" color="#bbb" sx={{ mb: 1 }}>
+          Clique em abrir câmera para iniciar. A câmera será fechada automaticamente após a captura.
+        </Typography>
+        <Stack direction="row" spacing={1} justifyContent="center">
+          <Button variant="contained" onClick={openCameraForCapture} size="small">Abrir Câmera</Button>
+          <Button variant="outlined" onClick={() => { setMode("view"); }} size="small">Cancelar</Button>
+        </Stack>
+      </>
+    )}
+
+    {/* Preview local exibido se existir */}
+    {capturedPreview && (
+      <Box sx={{ mt: 2, display: "flex", justifyContent: "center" }}>
+        <img src={capturedPreview} alt="Preview captura" style={{ maxWidth: 360, borderRadius: 8, border: "2px solid #2b2b2b" }} />
+      </Box>
+    )}
+  </Paper>
+)}
 
         <Box textAlign="center" mt={2}>
           <Button variant="contained" color="success" startIcon={<CameraAltIcon />} onClick={requestPunchWithFace} fullWidth>
