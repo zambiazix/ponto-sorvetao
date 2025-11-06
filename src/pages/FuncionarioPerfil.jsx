@@ -809,13 +809,13 @@ const openCameraForCapture = async () => {
     setCapturedPreview(null);
     setCaptureError(null);
     setCapturingPhoto(true);
-    setCapturing(true); // mostra o vídeo
+    setCapturing(true); // <-- ESSENCIAL: mostra o vídeo ao abrir
 
-    await new Promise((r) => setTimeout(r, 300)); // garante o <video> no DOM
+    // aguarda o vídeo estar presente no DOM
+    await new Promise((r) => setTimeout(r, 300));
 
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "user" },
-      audio: false,
     });
 
     if (!videoRef.current) {
@@ -827,14 +827,10 @@ const openCameraForCapture = async () => {
 
     videoRef.current.srcObject = stream;
 
-    // aguarda o carregamento completo do vídeo antes de tocar
-    await new Promise((resolve, reject) => {
-      let tries = 0;
+    // aguarda o carregamento real do vídeo antes de reproduzir
+    await new Promise((resolve) => {
       const checkReady = () => {
-        tries++;
-        if (!videoRef.current) return reject(new Error("Vídeo não encontrado"));
         if (videoRef.current.readyState >= 2) resolve();
-        else if (tries > 30) reject(new Error("Timeout ao inicializar vídeo"));
         else setTimeout(checkReady, 150);
       };
       checkReady();
@@ -846,7 +842,7 @@ const openCameraForCapture = async () => {
     console.error("Erro ao abrir câmera:", err);
     alert("Não foi possível acessar a câmera. Verifique permissões e tente novamente.");
     stopCaptureStream();
-    setCapturing(false);
+    setCapturing(false); // <-- garante reset visual
   }
 };
 
