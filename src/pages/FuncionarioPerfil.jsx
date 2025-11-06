@@ -811,11 +811,11 @@ const openCameraForCapture = async () => {
     setCapturingPhoto(true);
     setCapturing(true); // mostra o vídeo
 
-    // aguarda o vídeo estar presente no DOM
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 300)); // garante o <video> no DOM
 
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "user" },
+      audio: false,
     });
 
     if (!videoRef.current) {
@@ -827,10 +827,14 @@ const openCameraForCapture = async () => {
 
     videoRef.current.srcObject = stream;
 
-    // aguarda o carregamento real do vídeo
-    await new Promise((resolve) => {
+    // aguarda o carregamento completo do vídeo antes de tocar
+    await new Promise((resolve, reject) => {
+      let tries = 0;
       const checkReady = () => {
+        tries++;
+        if (!videoRef.current) return reject(new Error("Vídeo não encontrado"));
         if (videoRef.current.readyState >= 2) resolve();
+        else if (tries > 30) reject(new Error("Timeout ao inicializar vídeo"));
         else setTimeout(checkReady, 150);
       };
       checkReady();
@@ -871,7 +875,6 @@ const cancelCapture = () => {
 };
 
 // 📷 Captura o frame atual e salva a foto do funcionário
-// 📷 Captura o frame atual e salva a foto do funcionário
 const captureAndSavePhoto = async () => {
   try {
     const video = videoRef.current;
@@ -880,52 +883,49 @@ const captureAndSavePhoto = async () => {
       return;
     }
 
-    // Espera até o vídeo estar realmente pronto (com frame)
+    // Espera o vídeo estar pronto e ativo
+    if (!video.srcObject) {
+      alert("Câmera não inicializada. Tente abrir novamente.");
+      return;
+    }
+
     await new Promise((resolve, reject) => {
       let tries = 0;
       const checkFrame = () => {
         tries++;
-        if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
-          resolve();
-        } else if (tries > 40) {
-          reject(new Error("Timeout ao aguardar frame de vídeo."));
-        } else {
-          setTimeout(checkFrame, 100);
-        }
+        if (video.readyState >= 2 && video.videoWidth > 0) resolve();
+        else if (tries > 40) reject(new Error("Timeout aguardando frame de vídeo."));
+        else setTimeout(checkFrame, 100);
       };
       checkFrame();
     });
 
-    // Pequeno atraso extra pra garantir frame atualizado
-    await new Promise((r) => setTimeout(r, 150));
+    // atraso leve pro último frame
+    await new Promise((r) => setTimeout(r, 100));
 
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
-
     const ctx = canvas.getContext("2d");
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Converte para blob
+    // converte pra blob JPEG
     const blob = await new Promise((resolve) =>
       canvas.toBlob(resolve, "image/jpeg", 0.9)
     );
 
-    if (!blob) {
-      throw new Error("Falha ao gerar imagem do vídeo (blob nulo).");
-    }
+    if (!blob) throw new Error("Falha ao capturar imagem.");
 
     const photoURL = URL.createObjectURL(blob);
     setCapturedPhoto(photoURL);
     setCapturedPreview(photoURL);
 
-    // Envia para Firebase
     await uploadPhotoToFirebase(blob);
 
-    alert("Foto atualizada com sucesso!");
+    alert("✅ Foto atualizada com sucesso!");
   } catch (error) {
     console.error("Erro ao capturar foto:", error);
-    alert("Erro ao capturar a foto. Verifique se a câmera está funcionando corretamente.");
+    alert("Erro ao capturar foto. Verifique se a câmera está ativa.");
   } finally {
     stopCaptureStream();
     setMode("view");
