@@ -871,6 +871,7 @@ const cancelCapture = () => {
 };
 
 // 📷 Captura o frame atual e salva a foto do funcionário
+// 📷 Captura o frame atual e salva a foto do funcionário
 const captureAndSavePhoto = async () => {
   try {
     const video = videoRef.current;
@@ -879,37 +880,46 @@ const captureAndSavePhoto = async () => {
       return;
     }
 
-    // Espera até que o vídeo tenha dados disponíveis
-    if (video.readyState < 2) {
-      console.log("Aguardando vídeo estar pronto...");
-      await new Promise((resolve) => {
-        const checkReady = () => {
-          if (video.readyState >= 2) resolve();
-          else setTimeout(checkReady, 150);
-        };
-        checkReady();
-      });
-    }
+    // Espera até o vídeo estar realmente pronto (com frame)
+    await new Promise((resolve, reject) => {
+      let tries = 0;
+      const checkFrame = () => {
+        tries++;
+        if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+          resolve();
+        } else if (tries > 40) {
+          reject(new Error("Timeout ao aguardar frame de vídeo."));
+        } else {
+          setTimeout(checkFrame, 100);
+        }
+      };
+      checkFrame();
+    });
 
-    await new Promise((r) => setTimeout(r, 200)); // pequeno atraso
+    // Pequeno atraso extra pra garantir frame atualizado
+    await new Promise((r) => setTimeout(r, 150));
 
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
+
     const ctx = canvas.getContext("2d");
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+    // Converte para blob
+    const blob = await new Promise((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", 0.9)
+    );
+
     if (!blob) {
-      alert("Falha ao capturar imagem. Tente novamente.");
-      return;
+      throw new Error("Falha ao gerar imagem do vídeo (blob nulo).");
     }
 
     const photoURL = URL.createObjectURL(blob);
     setCapturedPhoto(photoURL);
     setCapturedPreview(photoURL);
 
-    // 🔥 Envia para o Firebase
+    // Envia para Firebase
     await uploadPhotoToFirebase(blob);
 
     alert("Foto atualizada com sucesso!");
