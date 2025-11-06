@@ -735,14 +735,26 @@ const carregarFuncionario = async () => {
       doc.text(`Mês de referência: ${capitalize(nomeMes)}`, 40, 104);
 
       autoTable(doc, {
-        startY: 125,
-        head: [["Data", "Dia", "Entrada", "Saída Int.", "Volta Int.", "Saída"]],
-        body: rows,
-        theme: "grid",
-        headStyles: { fillColor: [41, 128, 185] },
-        styles: { fontSize: 10, cellPadding: 6 },
-        margin: { left: 40, right: 40 },
-      });
+  startY: 125,
+  head: [["Data", "Dia", "Entrada", "Saída Int.", "Volta Int.", "Saída"]],
+  body: rows,
+  theme: "grid",
+  // estilo do cabeçalho
+  headStyles: { fillColor: [41, 128, 185], textColor: 255 },
+  // estilo padrão (inclui fillColor branco como padrão)
+  styles: { fontSize: 10, cellPadding: 6, textColor: 0, fillColor: [255, 255, 255] },
+  margin: { left: 40, right: 40 },
+
+  // aplica "zebra" linha a linha no body
+  didParseCell: function (data) {
+    if (data.section === "body") {
+      // data.row.index é 0-based para as linhas do body
+      const isOdd = data.row.index % 2 === 1;
+      // cor das linhas pares e ímpares (ajuste se quiser mais contraste)
+      data.cell.styles.fillColor = isOdd ? [245, 245, 245] : [255, 255, 255];
+    }
+  },
+});
 
       const finalY = doc.lastAutoTable ? doc.lastAutoTable.finalY : 140;
       let offset = finalY + 20;
@@ -1056,53 +1068,85 @@ const handleFileUpload = async (e) => {
               </Box>
             </AccordionSummary>
             <AccordionDetails>
-              <Grid container spacing={1}>
-                {month.days.map((p) => (
-                  <Grid item xs={12} key={p.id}>
-                    <Paper sx={{ p: 1.5, bgcolor: "#252525", borderRadius: 2 }}>
-                      <Stack direction="row" justifyContent="space-between" alignItems="center">
-                        <Typography sx={{ color: "#fff" }}>{p.id}</Typography>
-                        <Stack direction="row" spacing={1} alignItems="center">
-                          {isAdmin && (
-                            <IconButton size="small" color="primary" onClick={() => openEditModal(p)} title="Editar ponto">
-                              <EditIcon />
-                            </IconButton>
-                          )}
-                          <Chip label={`${p.status || "OK"}`} size="small" sx={{ bgcolor: "#333", color: "white", fontWeight: "bold" }} />
-                        </Stack>
-                      </Stack>
-                      <Typography variant="body2" color="#bbb" sx={{ mt: 1 }}>
-                        Entrada: {p.entrada || "-"} | Saída Intervalo: {p.intervaloSaida || "-"} | Volta: {p.intervaloVolta || "-"} | Saída: {p.saida || "-"}
-                      </Typography>
-                      <Typography variant="body2" color="#999" sx={{ mt: 0.5 }}>
-                        ⏰ Total: {minutesToHHMM(calcMinutesWorkedForDay(p))}
-                      </Typography>
-                      {p.atestadoUrl && (
-                        <Box mt={1}>
-                          <a href={p.atestadoUrl} target="_blank" rel="noopener noreferrer">
-                            📎 Ver Atestado
-                          </a>
-                        </Box>
-                      )}
-                      <Stack direction="row" spacing={1} mt={1}>
-                        <Button variant="outlined" color="info" component="label" size="small" startIcon={<PhotoCamera />}>
-                          Enviar Atestado
-                          <input hidden type="file" accept="image/*,application/pdf" onChange={(e) => handleUploadAtestado(p.id, e.target.files[0])} />
-                        </Button>
-                        <IconButton color="error" onClick={() => handleExcluirPonto(p.id)}>
-                          <DeleteForeverIcon />
-                        </IconButton>
-                        {isAdmin && (
-                          <Button size="small" variant="outlined" onClick={() => clearTimestamp(p.id, 'saida')}>
-                            Limpar Saída
-                          </Button>
-                        )}
-                      </Stack>
-                    </Paper>
-                  </Grid>
-                ))}
-              </Grid>
-            </AccordionDetails>
+  <Stack direction="column" spacing={1}>
+    {month.days.map((p) => (
+      <Paper key={p.id} sx={{ p: 1.5, bgcolor: "#252525", borderRadius: 2 }}>
+        <Stack direction="row" justifyContent="space-between" alignItems="center">
+          <Typography sx={{ color: "#fff" }}>
+            {(() => {
+              // Formata p.id que é "YYYY-MM-DD" para "DD/MM/YYYY"
+              const [y, m, d] = p.id.split("-");
+              return `${d}/${m}/${y}`;
+            })()}
+          </Typography>
+
+          <Stack direction="row" spacing={1} alignItems="center">
+            {isAdmin && (
+              <IconButton
+                size="small"
+                color="primary"
+                onClick={() => openEditModal(p)}
+                title="Editar ponto"
+              >
+                <EditIcon />
+              </IconButton>
+            )}
+            <Chip
+              label={`${p.status || "OK"}`}
+              size="small"
+              sx={{ bgcolor: "#333", color: "white", fontWeight: "bold" }}
+            />
+          </Stack>
+        </Stack>
+
+        <Typography variant="body2" color="#bbb" sx={{ mt: 1 }}>
+          Entrada: {p.entrada || "-"} | Saída Intervalo: {p.intervaloSaida || "-"} | Volta:{" "}
+          {p.intervaloVolta || "-"} | Saída: {p.saida || "-"}
+        </Typography>
+
+        <Typography variant="body2" color="#999" sx={{ mt: 0.5 }}>
+          ⏰ Total: {minutesToHHMM(calcMinutesWorkedForDay(p))}
+        </Typography>
+
+        {p.atestadoUrl && (
+          <Box mt={1}>
+            <a href={p.atestadoUrl} target="_blank" rel="noopener noreferrer">
+              📎 Ver Atestado
+            </a>
+          </Box>
+        )}
+
+        <Stack direction="row" spacing={1} mt={1}>
+          <Button
+            variant="outlined"
+            color="info"
+            component="label"
+            size="small"
+            startIcon={<PhotoCamera />}
+          >
+            Enviar Atestado
+            <input
+              hidden
+              type="file"
+              accept="image/*,application/pdf"
+              onChange={(e) => handleUploadAtestado(p.id, e.target.files[0])}
+            />
+          </Button>
+
+          <IconButton color="error" onClick={() => handleExcluirPonto(p.id)}>
+            <DeleteForeverIcon />
+          </IconButton>
+
+          {isAdmin && (
+            <Button size="small" variant="outlined" onClick={() => clearTimestamp(p.id, "saida")}>
+              Limpar Saída
+            </Button>
+          )}
+        </Stack>
+      </Paper>
+    ))}
+  </Stack>
+</AccordionDetails>
           </Accordion>
         ))}
       </Paper>
