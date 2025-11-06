@@ -46,7 +46,6 @@ import CancelIcon from "@mui/icons-material/Cancel";
 import PhotoCamera from "@mui/icons-material/PhotoCamera";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import EditIcon from "@mui/icons-material/Edit";
-
 import { uploadImage } from "../services/cloudinary";
 import WebcamCapture from "../components/WebcamCapture";
 import * as faceapi from "@vladmandic/face-api";
@@ -58,7 +57,6 @@ import {
   compareDescriptors,
   createImageElementFromDataUrl,
 } from "../utils/faceRecognition";
-
 // PDF libs
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -66,14 +64,16 @@ import autoTable from "jspdf-autotable";
 const ADMIN_UID = "mD3ie8YGmgaup2VVDpKuMBltXgp2";
 const THRESHOLD = 0.55;
 const BRAZIL_TZ = "America/Sao_Paulo";
-
 // localStorage key for regional holidays config
 const LS_KEY_REGIONAIS = "ponto_feriados_regionais_v1";
 
 export default function FuncionarioPerfil() {
   const { lojaId, funcionarioId } = useParams();
   const navigate = useNavigate();
-
+  const [funcionario, setFuncionario] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [fotoPreview, setFotoPreview] = useState(null);
   const [funcData, setFuncData] = useState(null);
   const [pontos, setPontos] = useState([]);
   const [lojaNome, setLojaNome] = useState("");
@@ -81,22 +81,9 @@ export default function FuncionarioPerfil() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [carregando, setCarregando] = useState(true);
   const [uploadingAtestado, setUploadingAtestado] = useState(false);
-
   // UI state for regional holidays text area
   const [regionalHolidaysText, setRegionalHolidaysText] = useState("");
   const [regionalHolidaysParsed, setRegionalHolidaysParsed] = useState([]);
-
-  // --- NEW: states for inline capture (enroll) ---
-// coloque com os outros useState
-const [capturing, setCapturing] = useState(false);
-const [captureError, setCaptureError] = useState(null);
-const [capturedPreview, setCapturedPreview] = useState(null); // <-- preview local da captura
-const [capturingPhoto, setCapturingPhoto] = useState(false);
-const [capturedPhoto, setCapturedPhoto] = useState(null);
-const videoRef = useRef(null);
-const canvasRef = useRef(null);
-const mediaStreamRef = useRef(null);
-
   // --- NEW: states for edit modal ---
   const [editOpen, setEditOpen] = useState(false);
   const [editDayId, setEditDayId] = useState(null);
@@ -115,38 +102,45 @@ const mediaStreamRef = useRef(null);
     });
     return () => unsub();
   }, []);
+// Carrega modelos e dados iniciais
+useEffect(() => {
+  const carregarTudo = async () => {
+    try {
+      console.log("FUNC-PERF: inicializando modelos...");
 
-  // Carrega modelos e dados iniciais
-  useEffect(() => {
-    (async () => {
-      try {
-        console.log("FUNC-PERF: inicializando modelos...");
-        await loadFaceApiModels();
-        // garante nets do faceapi (fallback)
-        const MODEL_URL = "/models";
-        if (!faceapi.nets.ssdMobilenetv1.params) {
-          console.log(
-            "FUNC-PERF: faceapi.nets não carregados — carregando via faceapi.loadFromUri..."
-          );
-          await Promise.all([
-            faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
-            faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-            faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-          ]);
-        }
-        console.log("FUNC-PERF: modelos carregados com sucesso.");
-      } catch (err) {
-        console.warn("FUNC-PERF: Falha ao carregar modelos face-api:", err);
+      await loadFaceApiModels();
+      const MODEL_URL = "/models";
+
+      if (!faceapi.nets.ssdMobilenetv1.params) {
+        console.log("FUNC-PERF: faceapi.nets não carregados — carregando via faceapi.loadFromUri...");
+        await Promise.all([
+          faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+        ]);
       }
-      await carregarLoja();
-      await carregarFuncionario();
-      await carregarPontos();
-      await verificarFolgaAutomatica();
-      // load regionais from localStorage
-      loadRegionaisFromStorage();
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lojaId, funcionarioId]);
+
+      console.log("FUNC-PERF: modelos carregados com sucesso.");
+
+      // ✅ Só carrega os dados se lojaId e funcionarioId existirem
+      if (lojaId && funcionarioId) {
+        console.log("FUNC-PERF: IDs detectados, carregando dados...");
+        await carregarLoja();
+        await carregarFuncionario();
+        await carregarPontos();
+        await verificarFolgaAutomatica();
+        loadRegionaisFromStorage();
+      } else {
+        console.warn("FUNC-PERF: lojaId ou funcionarioId indefinidos, pulando carregamento.");
+      }
+    } catch (err) {
+      console.warn("FUNC-PERF: Falha geral no carregamento:", err);
+    }
+  };
+
+  carregarTudo();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [lojaId, funcionarioId]);
 
   const loadRegionaisFromStorage = () => {
     try {
@@ -196,21 +190,27 @@ const mediaStreamRef = useRef(null);
       console.error("FUNC-PERF: Erro carregarLoja:", err);
     }
   };
-
-  const carregarFuncionario = async () => {
-    try {
-      const funcSnap = await getDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId));
-      if (funcSnap.exists()) {
-        const d = funcSnap.data();
-        setFuncData(d);
-        console.log("FUNC-PERF: Dados do funcionário carregados:", { id: funcionarioId, ...d });
-      } else {
-        console.warn("FUNC-PERF: Funcionário não encontrado no Firestore.");
-      }
-    } catch (err) {
-      console.error("FUNC-PERF: Erro carregarFuncionario:", err);
+// ✅ Função corrigida de carregarFuncionario
+const carregarFuncionario = async () => {
+  try {
+    const funcSnap = await getDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId));
+    if (funcSnap.exists()) {
+      const d = funcSnap.data();
+      // manter ambos estados sincronizados (se você usa funcData e funcionario)
+      setFuncData(d);
+      setFuncionario({ id: funcionarioId, ...d });
+      setFotoPreview(d.fotoReferencia || "");
+      console.log("FUNC-PERF: Dados do funcionário carregados:", { id: funcionarioId, ...d });
+    } else {
+      console.warn("FUNC-PERF: Funcionário não encontrado no Firestore.");
+      setFuncData(null);
+      setFuncionario(null);
+      setFotoPreview("");
     }
-  };
+  } catch (err) {
+    console.error("FUNC-PERF: Erro carregarFuncionario:", err);
+  }
+};
 
   const carregarPontos = async () => {
     try {
@@ -314,7 +314,6 @@ const mediaStreamRef = useRef(null);
       alert("Erro ao registrar ponto.");
     }
   };
-
   // --- Função que tenta detectar diretamente no <video> (como Painel), com fallback para canvas/dataURL ---
   const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, intervalMs = 800 } = {}) => {
     if (isAdmin) {
@@ -326,7 +325,6 @@ const mediaStreamRef = useRef(null);
       alert("⚠️ Nenhuma foto de referência cadastrada para este funcionário.");
       return;
     }
-
     // checar modelos carregados
     if (!faceapi.nets.ssdMobilenetv1.params || !faceapi.nets.faceRecognitionNet.params) {
       console.warn("FUNC-PERF: modelos faceapi podem não estar prontos. Tentando carregar novamente...");
@@ -368,7 +366,6 @@ const mediaStreamRef = useRef(null);
       video.style.borderRadius = "8px";
       video.style.background = "#000";
       document.body.appendChild(video);
-
       video.srcObject = stream;
 
       await new Promise((res) => {
@@ -448,7 +445,6 @@ const mediaStreamRef = useRef(null);
             console.warn("FUNC-PERF: erro no fallback (canvas/dataUrl):", err);
           }
         }
-
         // espera antes de tentar novamente
         await new Promise((r) => setTimeout(r, intervalMs));
       }
@@ -471,7 +467,6 @@ const mediaStreamRef = useRef(null);
       }
     }
   };
-
   // botão chama esta função
   const requestPunchWithFace = async () => {
     if (!funcData) {
@@ -510,7 +505,6 @@ const mediaStreamRef = useRef(null);
       alert("Erro ao excluir ponto.");
     }
   };
-
   // === EDIT MODAL HELPERS ===
   const openEditModal = (day) => {
     if (!isAdmin) return alert("Somente admin pode editar pontos.");
@@ -548,7 +542,6 @@ const mediaStreamRef = useRef(null);
         status: editValues.status || "OK",
         atualizadoEm: serverTimestamp(),
       };
-      // updateDoc merges only provided fields, but firebase doesn't delete keys when set to null via update
       // We'll use setDoc with merge true and post-process by removing keys if null (simple approach: fetch existing and set)
       const snap = await getDoc(docRef);
       const existing = snap.exists() ? snap.data() : {};
@@ -566,7 +559,6 @@ const mediaStreamRef = useRef(null);
       alert("Erro ao salvar alterações. Veja console.");
     }
   };
-
   // Admin helper: allow clearing a single timestamp
   const clearTimestamp = async (dayId, field) => {
     if (!isAdmin) return alert("Somente admin pode fazer isso.");
@@ -625,10 +617,7 @@ const mediaStreamRef = useRef(null);
       .sort((a, b) => (a[0] < b[0] ? 1 : -1))
       .map(([monthKey, v]) => ({ monthKey, ...v }));
   };
-
-  // ============================
   // Helpers: parse regional holidays text
-  // ============================
   const parseRegionalHolidaysText = (text) => {
     if (!text) return [];
     const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -672,10 +661,7 @@ const mediaStreamRef = useRef(null);
       return isoDate;
     }
   };
-
-  // ============================
   // gerarRelatorio (PDF)
-  // ============================
   const gerarRelatorio = async (monthObj) => {
     try {
       const [yearStr, monthStr] = monthObj.monthKey.split("-");
@@ -800,134 +786,78 @@ const mediaStreamRef = useRef(null);
       alert("Erro ao gerar relatório. Veja o console para detalhes.");
     }
   };
-
-// 📸 Abre a câmera e inicia o modo de captura
-const openCameraForCapture = async () => {
+// ☁️ Faz upload da imagem para o Cloudinary e salva no Firestore
+const uploadPhotoToFirebase = async (file) => {
   try {
-    stopCaptureStream(); // fecha qualquer câmera aberta antes
-    setCapturedPhoto(null);
-    setCapturedPreview(null);
-    setCaptureError(null);
-    setCapturingPhoto(true);
-    setCapturing(true); // <-- ESSENCIAL: mostra o vídeo ao abrir
+    if (!file) throw new Error("Arquivo inválido.");
 
-    // aguarda o vídeo estar presente no DOM
-    await new Promise((r) => setTimeout(r, 300));
+    // 1️⃣ Upload no Cloudinary
+    const imageUrl = await uploadImage(file);
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "user" },
-    });
+    // 2️⃣ Atualiza Firestore
+    const funcionarioRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId);
+    const funcionarioSnap = await getDoc(funcionarioRef);
 
-    if (!videoRef.current) {
-      alert("Erro interno: elemento de vídeo não encontrado.");
-      stopCaptureStream();
-      setCapturing(false);
-      return;
+    if (funcionarioSnap.exists()) {
+      await updateDoc(funcionarioRef, {
+        fotoReferencia: imageUrl,
+        updatedAt: new Date().toISOString(),
+      });
+      console.log("✅ Foto atualizada com sucesso:", imageUrl);
+    } else {
+      await setDoc(funcionarioRef, {
+        fotoReferencia: imageUrl,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      console.log("🆕 Documento criado e foto salva:", imageUrl);
     }
 
-    videoRef.current.srcObject = stream;
+    // ✅ Atualiza imediatamente o estado local para refletir a nova foto
+    setFotoPreview(imageUrl);
+    setFuncData((prev) => ({ ...prev, fotoReferencia: imageUrl }));
 
-    // aguarda o carregamento real do vídeo antes de reproduzir
-    await new Promise((resolve) => {
-      const checkReady = () => {
-        if (videoRef.current.readyState >= 2) resolve();
-        else setTimeout(checkReady, 150);
-      };
-      checkReady();
-    });
-
-    await videoRef.current.play();
-    console.log("🎥 Câmera iniciada com sucesso.");
-  } catch (err) {
-    console.error("Erro ao abrir câmera:", err);
-    alert("Não foi possível acessar a câmera. Verifique permissões e tente novamente.");
-    stopCaptureStream();
-    setCapturing(false); // <-- garante reset visual
+    return imageUrl;
+  } catch (error) {
+    console.error("❌ Erro ao enviar foto:", error);
+    alert("Erro ao enviar a foto. Tente novamente.");
+    throw error;
   }
 };
 
-// ⛔ Encerra o stream da câmera com segurança
-const stopCaptureStream = () => {
+const handleFileUpload = async (e) => {
+  const file = e?.target?.files?.[0];
+  if (!file) return;
+
   try {
-    if (videoRef.current && videoRef.current.srcObject) {
-      const tracks = videoRef.current.srcObject.getTracks();
-      tracks.forEach((track) => track.stop());
-      videoRef.current.srcObject = null;
-    }
-  } catch (e) {
-    console.warn("Erro ao encerrar câmera:", e);
-  } finally {
-    setCapturing(false);
-    setCapturingPhoto(false);
-  }
-};
+    setUploading(true);
 
-// ❌ Cancela captura e fecha câmera
-const cancelCapture = () => {
-  stopCaptureStream();
-  setCapturing(false);
-  setCaptureError(null);
-  setCapturedPreview(null);
-};
+    // 1) Envia para o Cloudinary
+    const imageUrl = await uploadImage(file); // sua função services/cloudinary.js
 
-// 📷 Captura o frame atual e salva a foto do funcionário
-const captureAndSavePhoto = async () => {
-  try {
-    const video = videoRef.current;
-    if (!video) {
-      alert("Erro: elemento de vídeo não encontrado.");
-      return;
-    }
+    // 2) Atualiza o documento NO MESMO PATH que você usa para ler
+    const funcionarioRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId);
+    // Use setDoc merge/update para não sobrescrever campos importantes
+    await updateDoc(funcionarioRef, { fotoReferencia: imageUrl, updatedAt: new Date().toISOString() });
 
-    // Espera o vídeo estar pronto e ativo
-    if (!video.srcObject) {
-      alert("Câmera não inicializada. Tente abrir novamente.");
-      return;
-    }
+    // 3) Atualiza estados locais para refletir mudança imediatamente
+    setFotoPreview(imageUrl);
+    setFuncData((prev) => ({ ...(prev || {}), fotoReferencia: imageUrl }));
+    setFuncionario((prev) => ({ ...(prev || {}), fotoReferencia: imageUrl }));
 
-    await new Promise((resolve, reject) => {
-      let tries = 0;
-      const checkFrame = () => {
-        tries++;
-        if (video.readyState >= 2 && video.videoWidth > 0) resolve();
-        else if (tries > 40) reject(new Error("Timeout aguardando frame de vídeo."));
-        else setTimeout(checkFrame, 100);
-      };
-      checkFrame();
-    });
+    // 4) Opcional: garante consistência lendo do servidor (bom pra debug)
+    // await carregarFuncionario();
 
-    // atraso leve pro último frame
-    await new Promise((r) => setTimeout(r, 100));
-
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    // converte pra blob JPEG
-    const blob = await new Promise((resolve) =>
-      canvas.toBlob(resolve, "image/jpeg", 0.9)
-    );
-
-    if (!blob) throw new Error("Falha ao capturar imagem.");
-
-    const photoURL = URL.createObjectURL(blob);
-    setCapturedPhoto(photoURL);
-    setCapturedPreview(photoURL);
-
-    await uploadPhotoToFirebase(blob);
-
+    console.log("✅ Foto atualizada com sucesso:", imageUrl);
     alert("✅ Foto atualizada com sucesso!");
   } catch (error) {
-    console.error("Erro ao capturar foto:", error);
-    alert("Erro ao capturar foto. Verifique se a câmera está ativa.");
+    console.error("Erro ao enviar foto:", error);
+    alert("Erro ao enviar a foto. Veja console.");
   } finally {
-    stopCaptureStream();
-    setMode("view");
+    setUploading(false);
+    // limpa input se quiser: e.target.value = null; // cuidado com controlaçao
   }
 };
-
   // helpers
   function capitalize(s) {
     if (!s) return s;
@@ -962,7 +892,6 @@ const captureAndSavePhoto = async () => {
       <Box sx={{ position: "fixed", top: 8, right: 16, color: "rgba(255,255,255,0.2)", fontSize: 12 }}>
         Versão 1.0 - Criado por Zambiazi
       </Box>
-
       <Stack direction="row" alignItems="center" spacing={2} mb={3} justifyContent="center">
         <Button
           variant="outlined"
@@ -979,12 +908,25 @@ const captureAndSavePhoto = async () => {
           </Typography>
         </Box>
       </Stack>
-
       <Paper sx={{ p: 3, bgcolor: "#1e1e1e", borderRadius: 3 }}>
         <Box textAlign="center" mb={3}>
           {funcData?.fotoReferencia ? (
             <>
-              <Avatar src={funcData.fotoReferencia} sx={{ width: 100, height: 100, margin: "0 auto" }} />
+              {funcionario ? (
+  <Avatar
+  key={(fotoPreview || funcData?.fotoReferencia || "") + "_" + (funcionarioId || "")}
+  src={(fotoPreview || funcData?.fotoReferencia || "") + (fotoPreview ? `?t=${Date.now()}` : "")}
+  alt={funcData?.nome || "Foto do funcionário"}
+  sx={{
+    width: 120,
+    height: 120,
+    mx: "auto",      // centraliza horizontalmente dentro do Box
+    display: "block" // garante comportamento consistente
+  }}
+/>
+) : (
+  <CircularProgress size={40} />
+)}
               <Typography color="green">✅ Foto cadastrada!</Typography>
             </>
           ) : Array.isArray(funcData?.faceDescriptor) && funcData.faceDescriptor.length > 0 ? (
@@ -997,22 +939,24 @@ const captureAndSavePhoto = async () => {
             {funcData?.nome}
           </Typography>
           {isAdmin && (
-            <Button variant="contained" color="warning" startIcon={<AddAPhotoIcon />} sx={{ mt: 2 }} onClick={() => {
-              setMode("enroll");
-              setTimeout(() => openCameraForCapture(), 150);
-            }}>
-              Atualizar Foto
-            </Button>
+            <Button
+  variant="contained"
+  color="warning"
+  component="label"
+  startIcon={<AddAPhotoIcon />}
+  sx={{ mt: 2 }}
+>
+  Enviar Nova Foto
+  <input hidden accept="image/*" type="file" onChange={handleFileUpload} />
+</Button>
           )}
         </Box>
-
         {/* MODE === enroll: inline capture UI */}
         {mode === "enroll" && (
   <Paper sx={{ p: 2, bgcolor: "#2a2a2a", borderRadius: 2, textAlign: "center" }}>
     <Typography mb={1} sx={{ color: "#fff" }}>
       Capture uma foto de referência (apenas 1 foto; a câmera fechará automaticamente após a captura)
     </Typography>
-
     {capturing ? (
       <>
         <Box sx={{ display: "flex", justifyContent: "center", mb: 1 }}>
@@ -1045,7 +989,6 @@ const captureAndSavePhoto = async () => {
         </Stack>
       </>
     )}
-
     {/* Preview local exibido se existir */}
     {capturedPreview && (
       <Box sx={{ mt: 2, display: "flex", justifyContent: "center" }}>
@@ -1054,15 +997,12 @@ const captureAndSavePhoto = async () => {
     )}
   </Paper>
 )}
-
         <Box textAlign="center" mt={2}>
           <Button variant="contained" color="success" startIcon={<CameraAltIcon />} onClick={requestPunchWithFace} fullWidth>
             Bater Ponto
           </Button>
         </Box>
-
         <Divider sx={{ my: 3, bgcolor: "#333" }} />
-
         {/* CONFIG UI: Feriados Regionais */}
         {isAdmin && (
           <Paper sx={{ p: 2, mb: 2, bgcolor: "#222", borderRadius: 2 }}>
@@ -1096,11 +1036,9 @@ const captureAndSavePhoto = async () => {
             </Stack>
           </Paper>
         )}
-
         <Typography variant="h6" mb={2} sx={{ color: "#fff", display: "flex", alignItems: "center", gap: 1 }}>
           Histórico de Pontos
         </Typography>
-
         {months.map((month) => (
           <Accordion key={month.monthKey} defaultExpanded={month.monthKey === currentMonthKey} sx={{ bgcolor: "#1a1a1a", color: "white", mb: 1 }}>
             <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: "#fff" }} />}>
@@ -1168,7 +1106,6 @@ const captureAndSavePhoto = async () => {
           </Accordion>
         ))}
       </Paper>
-
       {/* EDIT DIALOG */}
       <Dialog open={editOpen} onClose={closeEditModal} fullWidth maxWidth="sm">
         <DialogTitle>Editar Ponto - {editDayId}</DialogTitle>
@@ -1202,7 +1139,6 @@ const captureAndSavePhoto = async () => {
               placeholder="17:00"
               fullWidth
             />
-
             <FormControl fullWidth>
               <InputLabel id="status-label">Status</InputLabel>
               <Select
@@ -1216,7 +1152,6 @@ const captureAndSavePhoto = async () => {
                 ))}
               </Select>
             </FormControl>
-
             <Typography variant="caption" color="#bbb">Deixe campos vazios para removê-los.</Typography>
           </Stack>
         </DialogContent>
@@ -1228,14 +1163,12 @@ const captureAndSavePhoto = async () => {
     </Container>
   );
 }
-
 // Converte minutos para formato HH:MM
 function minutesToHHMM(minutos) {
   const h = Math.floor(minutos / 60);
   const m = Math.round(minutos % 60);
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
-
 // Helpers reuse (same logic as inside)
 function calcMinutesWorkedForDay(p) {
   const toMinutesLocal = (t) => {
@@ -1252,7 +1185,6 @@ function calcMinutesWorkedForDay(p) {
   if (iv && s && s > iv) total += s - iv;
   return total;
 }
-
 // groupByMonth for outside helper usage if needed
 function groupByMonth(pontosList) {
   const map = new Map();
