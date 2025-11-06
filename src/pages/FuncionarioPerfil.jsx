@@ -91,7 +91,10 @@ export default function FuncionarioPerfil() {
 const [capturing, setCapturing] = useState(false);
 const [captureError, setCaptureError] = useState(null);
 const [capturedPreview, setCapturedPreview] = useState(null); // <-- preview local da captura
+const [capturingPhoto, setCapturingPhoto] = useState(false);
+const [capturedPhoto, setCapturedPhoto] = useState(null);
 const videoRef = useRef(null);
+const canvasRef = useRef(null);
 const mediaStreamRef = useRef(null);
 
   // --- NEW: states for edit modal ---
@@ -803,47 +806,58 @@ const mediaStreamRef = useRef(null);
   // ============================
   // 📸 Abre a câmera e exibe o vídeo
 // 📸 Abre a câmera e exibe o vídeo (versão segura)
+// 📸 Abre a câmera e exibe o vídeo (versão segura e persistente)
 const openCameraForCapture = async () => {
   try {
-    // Garante que qualquer stream anterior foi limpo
-    stopCaptureStream();
+    stopCaptureStream(); // fecha qualquer câmera aberta antes
     setCapturedPhoto(null);
-
-    // Garante que o componente de vídeo será renderizado antes de acessar a ref
+    setCapturedPreview(null);
+    setCaptureError(null);
     setCapturingPhoto(true);
 
-    // Aguarda o React renderizar o vídeo no DOM
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    // espera o vídeo ser renderizado no DOM
+    await new Promise((r) => setTimeout(r, 300));
 
-    // Solicita acesso à câmera
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
 
-    if (videoRef.current) {
-      videoRef.current.srcObject = stream;
-      await new Promise((resolve) => {
-        videoRef.current.onloadedmetadata = () => {
-          videoRef.current.play();
-          resolve();
-        };
-      });
-    } else {
-      alert("Erro interno: vídeo não encontrado no DOM.");
+    if (!videoRef.current) {
+      alert("Erro interno: elemento de vídeo não encontrado.");
       stopCaptureStream();
       return;
     }
+
+    videoRef.current.srcObject = stream;
+
+    // aguarda realmente carregar dados de vídeo antes de tocar
+    await new Promise((resolve) => {
+      const checkReady = () => {
+        if (videoRef.current.readyState >= 2) resolve();
+        else setTimeout(checkReady, 150);
+      };
+      checkReady();
+    });
+
+    await videoRef.current.play();
+
+    console.log("🎥 Câmera iniciada com sucesso.");
   } catch (err) {
-    console.error("Erro ao acessar a câmera:", err);
-    alert("Não foi possível acessar a câmera. Verifique as permissões e tente novamente.");
+    console.error("Erro ao abrir câmera:", err);
+    alert("Não foi possível acessar a câmera. Verifique permissões e tente novamente.");
     stopCaptureStream();
   }
 };
 
 // ⛔ Encerra o stream da câmera
+// ⛔ Encerra o stream da câmera
 const stopCaptureStream = () => {
-  if (videoRef.current && videoRef.current.srcObject) {
-    const tracks = videoRef.current.srcObject.getTracks();
-    tracks.forEach((track) => track.stop());
-    videoRef.current.srcObject = null;
+  try {
+    if (videoRef.current && videoRef.current.srcObject) {
+      const tracks = videoRef.current.srcObject.getTracks();
+      tracks.forEach((track) => track.stop());
+      videoRef.current.srcObject = null;
+    }
+  } catch (e) {
+    console.warn("Erro ao encerrar câmera:", e);
   }
   setCapturingPhoto(false);
 };
@@ -856,17 +870,18 @@ const cancelCapture = () => {
 };
 
 // 📷 Captura o frame atual e salva a foto do funcionário
+// 📷 Captura o frame atual e salva a foto do funcionário
 const captureAndSavePhoto = async () => {
   try {
     const video = videoRef.current;
     if (!video) {
-      alert("Vídeo não encontrado.");
+      alert("Erro: elemento de vídeo não encontrado.");
       return;
     }
 
-    // Aguarda até que o vídeo tenha dados visuais disponíveis
+    // Espera até que o vídeo tenha dados disponíveis
     if (video.readyState < 2) {
-      console.log("Aguardando o vídeo estar pronto...");
+      console.log("Aguardando vídeo estar pronto...");
       await new Promise((resolve) => {
         const checkReady = () => {
           if (video.readyState >= 2) resolve();
@@ -876,36 +891,34 @@ const captureAndSavePhoto = async () => {
       });
     }
 
-    // Atraso extra pra garantir o frame
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 200)); // pequeno atraso de segurança
 
-    // Cria um canvas temporário
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
     const ctx = canvas.getContext("2d");
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Converte o frame em blob JPEG
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
     if (!blob) {
       alert("Falha ao capturar imagem. Tente novamente.");
       return;
     }
 
-    // Cria uma URL temporária da imagem e atualiza a prévia
     const photoURL = URL.createObjectURL(blob);
     setCapturedPhoto(photoURL);
+    setCapturedPreview(photoURL);
 
-    // 🔥 Salva no Firebase (usa sua função existente)
+    // 🔥 Envia para o Firebase
     await uploadPhotoToFirebase(blob);
-    alert("Foto atualizada com sucesso!");
 
+    alert("Foto atualizada com sucesso!");
   } catch (error) {
-    console.error("Erro ao capturar a câmera:", error);
+    console.error("Erro ao capturar foto:", error);
     alert("Erro ao capturar a foto. Verifique se a câmera está funcionando corretamente.");
   } finally {
     stopCaptureStream();
+    setMode("view");
   }
 };
 
