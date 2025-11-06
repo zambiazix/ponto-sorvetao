@@ -801,12 +801,7 @@ const mediaStreamRef = useRef(null);
     }
   };
 
-  // ============================
-  // NEW: capture functions (inline enroll)
-  // ============================
-  // 📸 Abre a câmera e exibe o vídeo
-// 📸 Abre a câmera e exibe o vídeo (versão segura)
-// 📸 Abre a câmera e exibe o vídeo (versão segura e persistente)
+// 📸 Abre a câmera e inicia o modo de captura
 const openCameraForCapture = async () => {
   try {
     stopCaptureStream(); // fecha qualquer câmera aberta antes
@@ -814,21 +809,25 @@ const openCameraForCapture = async () => {
     setCapturedPreview(null);
     setCaptureError(null);
     setCapturingPhoto(true);
+    setCapturing(true); // <-- ESSENCIAL: mostra o vídeo ao abrir
 
-    // espera o vídeo ser renderizado no DOM
+    // aguarda o vídeo estar presente no DOM
     await new Promise((r) => setTimeout(r, 300));
 
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user" },
+    });
 
     if (!videoRef.current) {
       alert("Erro interno: elemento de vídeo não encontrado.");
       stopCaptureStream();
+      setCapturing(false);
       return;
     }
 
     videoRef.current.srcObject = stream;
 
-    // aguarda realmente carregar dados de vídeo antes de tocar
+    // aguarda o carregamento real do vídeo antes de reproduzir
     await new Promise((resolve) => {
       const checkReady = () => {
         if (videoRef.current.readyState >= 2) resolve();
@@ -838,17 +837,16 @@ const openCameraForCapture = async () => {
     });
 
     await videoRef.current.play();
-
     console.log("🎥 Câmera iniciada com sucesso.");
   } catch (err) {
     console.error("Erro ao abrir câmera:", err);
     alert("Não foi possível acessar a câmera. Verifique permissões e tente novamente.");
     stopCaptureStream();
+    setCapturing(false); // <-- garante reset visual
   }
 };
 
-// ⛔ Encerra o stream da câmera
-// ⛔ Encerra o stream da câmera
+// ⛔ Encerra o stream da câmera com segurança
 const stopCaptureStream = () => {
   try {
     if (videoRef.current && videoRef.current.srcObject) {
@@ -858,8 +856,10 @@ const stopCaptureStream = () => {
     }
   } catch (e) {
     console.warn("Erro ao encerrar câmera:", e);
+  } finally {
+    setCapturing(false);
+    setCapturingPhoto(false);
   }
-  setCapturingPhoto(false);
 };
 
 const cancelCapture = () => {
@@ -869,7 +869,6 @@ const cancelCapture = () => {
   setCapturedPreview(null);
 };
 
-// 📷 Captura o frame atual e salva a foto do funcionário
 // 📷 Captura o frame atual e salva a foto do funcionário
 const captureAndSavePhoto = async () => {
   try {
@@ -1222,10 +1221,6 @@ const captureAndSavePhoto = async () => {
     </Container>
   );
 }
-
-// ---------------------------
-// Additional helpers (outside component)
-// ---------------------------
 
 // Converte minutos para formato HH:MM
 function minutesToHHMM(minutos) {
