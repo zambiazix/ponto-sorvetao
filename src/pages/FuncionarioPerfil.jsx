@@ -809,7 +809,7 @@ const openCameraForCapture = async () => {
     setCapturedPreview(null);
     setCaptureError(null);
     setCapturingPhoto(true);
-    setCapturing(true); // <-- ESSENCIAL: mostra o vídeo ao abrir
+    setCapturing(true); // mostra o vídeo
 
     // aguarda o vídeo estar presente no DOM
     await new Promise((r) => setTimeout(r, 300));
@@ -827,7 +827,7 @@ const openCameraForCapture = async () => {
 
     videoRef.current.srcObject = stream;
 
-    // aguarda o carregamento real do vídeo antes de reproduzir
+    // aguarda o carregamento real do vídeo
     await new Promise((resolve) => {
       const checkReady = () => {
         if (videoRef.current.readyState >= 2) resolve();
@@ -842,7 +842,7 @@ const openCameraForCapture = async () => {
     console.error("Erro ao abrir câmera:", err);
     alert("Não foi possível acessar a câmera. Verifique permissões e tente novamente.");
     stopCaptureStream();
-    setCapturing(false); // <-- garante reset visual
+    setCapturing(false);
   }
 };
 
@@ -862,6 +862,7 @@ const stopCaptureStream = () => {
   }
 };
 
+// ❌ Cancela captura e fecha câmera
 const cancelCapture = () => {
   stopCaptureStream();
   setCapturing(false);
@@ -890,7 +891,7 @@ const captureAndSavePhoto = async () => {
       });
     }
 
-    await new Promise((r) => setTimeout(r, 200)); // pequeno atraso de segurança
+    await new Promise((r) => setTimeout(r, 200)); // pequeno atraso
 
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth || 640;
