@@ -1,9 +1,9 @@
-// src/App.jsx
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Login from "./pages/Login";
 import Painel from "./pages/Painel";
 import FuncionarioPerfil from "./pages/FuncionarioPerfil";
 import AdminPainel from "./pages/AdminPainel";
+import EscalaFolgas from "./pages/EscalaFolgas"; // ✅ Importa o componente novo
 
 export default function App() {
   return (
@@ -26,6 +26,9 @@ export default function App() {
           path="/admin/loja/:lojaId/funcionario/:funcionarioId"
           element={<FuncionarioPerfil />}
         />
+
+        {/* ✅ Nova rota de Escala de Folgas */}
+        <Route path="/escala-folgas" element={<EscalaFolgas funcionarios={[]} />} />
       </Routes>
     </BrowserRouter>
   );

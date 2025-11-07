@@ -27,6 +27,7 @@ import LogoutIcon from "@mui/icons-material/Logout";
 import AddIcon from "@mui/icons-material/Add";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import PersonIcon from "@mui/icons-material/Person";
+import CalendarMonthIcon from "@mui/icons-material/CalendarMonth";
 import * as faceapi from "@vladmandic/face-api";
 
 const ADMIN_UID = "mD3ie8YGmgaup2VVDpKuMBltXgp2";
@@ -122,9 +123,8 @@ export default function Painel() {
       return;
     }
 
-    // ✅ Verifica se os modelos já foram carregados
     if (!modelosCarregados) {
-      alert("⚙️ Aguarde um momento, os modelos de reconhecimento ainda estão sendo carregados...");
+      alert("⚙️ Aguarde o carregamento dos modelos de reconhecimento...");
       return;
     }
 
@@ -139,7 +139,7 @@ export default function Painel() {
       const funcData = funcSnap.data();
 
       if (!funcData.fotoReferencia) {
-        alert("⚠️ Este funcionário ainda não possui imagem cadastrada para reconhecimento facial.");
+        alert("⚠️ Este funcionário ainda não possui imagem cadastrada.");
         return;
       }
 
@@ -160,7 +160,6 @@ export default function Painel() {
         ])
       );
 
-      // 🎥 Cria vídeo temporário
       const video = document.createElement("video");
       video.autoplay = true;
       video.style.position = "fixed";
@@ -177,7 +176,7 @@ export default function Painel() {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
       video.srcObject = stream;
 
-      alert("📸 Olhe para a câmera por alguns segundos para verificação...");
+      alert("📸 Olhe para a câmera por alguns segundos...");
 
       await new Promise((res) => setTimeout(res, 4000));
 
@@ -200,7 +199,7 @@ export default function Painel() {
         alert("✅ Rosto reconhecido com sucesso!");
         navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
       } else {
-        alert("⚠️ Rosto não reconhecido. Acesso negado.");
+        alert("⚠️ Rosto não reconhecido.");
       }
     } catch (err) {
       console.error("Erro no reconhecimento facial:", err);
@@ -342,14 +341,24 @@ export default function Painel() {
 
       <Stack direction="row" spacing={2} justifyContent="center" mt={4}>
         {isAdmin && (
-          <Button
-            variant="outlined"
-            color="secondary"
-            startIcon={<ArrowBackIcon />}
-            onClick={() => navigate("/admin")}
-          >
-            Painel Admin
-          </Button>
+          <>
+            <Button
+  variant="contained"
+  color="secondary"
+  startIcon={<CalendarMonthIcon />}
+  onClick={() => navigate("/escala-folgas", { state: { funcionarios } })}
+>
+  Escala de Folgas
+</Button>
+            <Button
+              variant="outlined"
+              color="secondary"
+              startIcon={<ArrowBackIcon />}
+              onClick={() => navigate("/admin")}
+            >
+              Painel Admin
+            </Button>
+          </>
         )}
         <Button
           variant="contained"
