@@ -739,19 +739,33 @@ const carregarFuncionario = async () => {
   head: [["Data", "Dia", "Entrada", "Saída Int.", "Volta Int.", "Saída"]],
   body: rows,
   theme: "grid",
-  // estilo do cabeçalho
   headStyles: { fillColor: [41, 128, 185], textColor: 255 },
-  // estilo padrão (inclui fillColor branco como padrão)
   styles: { fontSize: 10, cellPadding: 6, textColor: 0, fillColor: [255, 255, 255] },
   margin: { left: 40, right: 40 },
 
-  // aplica "zebra" linha a linha no body
-  didParseCell: function (data) {
-    if (data.section === "body") {
-      // data.row.index é 0-based para as linhas do body
-      const isOdd = data.row.index % 2 === 1;
-      // cor das linhas pares e ímpares (ajuste se quiser mais contraste)
-      data.cell.styles.fillColor = isOdd ? [245, 245, 245] : [255, 255, 255];
+  // DESENHA a "zebra" manualmente após cada célula desenhada
+  didDrawCell: function (data) {
+    // apenas para as linhas do body (dados)
+    if (data.section === "body" && data.row && typeof data.row.index === "number") {
+      const rowIndex = data.row.index; // 0-based
+      const isOdd = rowIndex % 2 === 1; // ajuste para trocar par/ímpar
+
+      if (isOdd) {
+        // coordenadas e dimensões da célula atual
+        const x = data.cell.x;
+        const y = data.cell.y;
+        const w = data.cell.width;
+        const h = data.cell.height;
+
+        // cor de fundo da linha (cinza claro). Ajuste se quiser outro tom.
+        doc.setFillColor(245, 245, 245); // RGB
+
+        // desenha retângulo preenchido por cima da célula
+        // usamos 'F' (fill) para preencher sem traço
+        doc.rect(x, y, w, h, "F");
+
+        // OBS: o texto já foi desenhado pelo autotable, então não precisamos redesenhar
+      }
     }
   },
 });
@@ -803,32 +817,45 @@ const uploadPhotoToFirebase = async (file) => {
   try {
     if (!file) throw new Error("Arquivo inválido.");
 
-    // 1️⃣ Upload no Cloudinary
+    // 1️⃣ Faz upload no Cloudinary
     const imageUrl = await uploadImage(file);
+    console.log("✅ Upload no Cloudinary concluído:", imageUrl);
 
-    // 2️⃣ Atualiza Firestore
-    const funcionarioRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId);
-    const funcionarioSnap = await getDoc(funcionarioRef);
+    // 2️⃣ Gera descriptor com face-api
+    const img = await faceapi.fetchImage(imageUrl);
+    const detection = await faceapi
+      .detectSingleFace(img)
+      .withFaceLandmarks()
+      .withFaceDescriptor();
 
-    if (funcionarioSnap.exists()) {
-      await updateDoc(funcionarioRef, {
-        fotoReferencia: imageUrl,
-        updatedAt: new Date().toISOString(),
-      });
-      console.log("✅ Foto atualizada com sucesso:", imageUrl);
-    } else {
-      await setDoc(funcionarioRef, {
-        fotoReferencia: imageUrl,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-      console.log("🆕 Documento criado e foto salva:", imageUrl);
+    if (!detection) {
+      alert("Nenhum rosto detectado na imagem! Tente outra foto.");
+      return;
     }
 
-    // ✅ Atualiza imediatamente o estado local para refletir a nova foto
-    setFotoPreview(imageUrl);
-    setFuncData((prev) => ({ ...prev, fotoReferencia: imageUrl }));
+    // 3️⃣ Converte descriptor para array simples
+    const descriptorArray = Array.from(detection.descriptor);
 
+    // 4️⃣ Referência ao funcionário
+    const funcionarioRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId);
+
+    // 5️⃣ Atualiza Firestore com foto + descriptor
+    await updateDoc(funcionarioRef, {
+      fotoReferencia: imageUrl,
+      faceDescriptor: descriptorArray,
+      updatedAt: new Date().toISOString(),
+    });
+
+    // 6️⃣ Atualiza estado local para refletir a nova foto
+    setFotoPreview(imageUrl);
+    setFuncData((prev) => ({
+      ...prev,
+      fotoReferencia: imageUrl,
+      faceDescriptor: descriptorArray,
+    }));
+
+    alert("✅ Foto e reconhecimento facial atualizados com sucesso!");
+    console.log("📸 Face descriptor salvo com sucesso.");
     return imageUrl;
   } catch (error) {
     console.error("❌ Erro ao enviar foto:", error);
