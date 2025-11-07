@@ -661,157 +661,230 @@ const carregarFuncionario = async () => {
       return isoDate;
     }
   };
-  // gerarRelatorio (PDF)
-  const gerarRelatorio = async (monthObj) => {
-    try {
-      const [yearStr, monthStr] = monthObj.monthKey.split("-");
-      const ano = Number(yearStr);
-      const mesIndex = Number(monthStr) - 1;
-      const nomeMes = new Date(ano, mesIndex, 1).toLocaleString("pt-BR", { month: "long", year: "numeric" });
-      const funcionario = funcData || {};
-      const loja = lojaNome || lojaId;
+// gerarRelatorio (substitua a função inteira por esta)
+// gerarRelatorio (substitua sua função inteira por esta)
+const gerarRelatorio = async (monthObj) => {
+  try {
+    const [yearStr, monthStr] = monthObj.monthKey.split("-");
+    const ano = Number(yearStr);
+    const mesIndex = Number(monthStr) - 1;
+    const nomeMes = new Date(ano, mesIndex, 1).toLocaleString("pt-BR", {
+      month: "long",
+      year: "numeric",
+    });
+    const funcionario = funcData || {};
+    const loja = lojaNome || lojaId;
 
-      let feriadosNacionais = [];
+    // buscar feriados nacionais (marca como 'Nacional')
+    let feriadosNacionais = [];
+    try {
+      const resp = await fetch(`https://brasilapi.com.br/api/feriados/v1/${ano}`);
+      if (resp.ok) {
+        const json = await resp.json();
+        feriadosNacionais = json.map((f) => ({
+          dateIso: f.date,
+          date: formatDateToDDMM(f.date),
+          name: f.name,
+          type: "Nacional",
+        }));
+      }
+    } catch (err) {
+      console.warn("gerarRelatorio: falha ao buscar feriados nacionais:", err);
+    }
+
+    // feriados regionais/municipais vindos do textarea
+    const feriadosRegionaisFromText = (parseRegionalHolidaysText(regionalHolidaysText || "") || []).map(
+      (f) => ({ ...f, type: "Regional/Municipal" })
+    );
+
+    const todosFeriados = [...feriadosNacionais, ...feriadosRegionaisFromText];
+
+    // GERAÇÃO DE ROWS: percorre TODO o mês, 1..N dias
+    const rows = [];
+    let totalMinutesMonth = 0;
+    const diasNoMes = new Date(ano, mesIndex + 1, 0).getDate();
+
+    // debug: ver o conteúdo original vindo do monthObj
+    console.log("gerarRelatorio: monthObj.days (original)", monthObj.days);
+
+    for (let dia = 1; dia <= diasNoMes; dia++) {
+      const iso = `${ano}-${String(mesIndex + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
+      // usar Date(ano, mesIndex, dia) evita problemas de timezone
+      const dateObj = new Date(ano, mesIndex, dia);
+      const dataFormatada = iso.split("-").reverse().join("/");
+      const weekday = dateObj.toLocaleDateString("pt-BR", { weekday: "long" });
+      const ddmm = formatDateToDDMM(iso);
+
+      // procura o ponto exatamente pelo id ISO
+      const p = (Array.isArray(monthObj.days) && monthObj.days.find((d) => d && d.id === iso)) || {};
+
+      // verifica feriado
+      const feriadoMatchIso = todosFeriados.find((f) => f.dateIso === iso);
+      const feriadoMatchDDMM = todosFeriados.find((f) => f.date === ddmm && !f.dateIso);
+      const feriadoMatch = feriadoMatchIso || feriadoMatchDDMM;
+
+      const diaLabel = feriadoMatch ? `${capitalize(weekday)} (Feriado)` : capitalize(weekday);
+
+      // garante strings
+      let entradaCell = p.entrada ? String(p.entrada) : "-";
+      let saidaIntCell = p.intervaloSaida ? String(p.intervaloSaida) : "-";
+      let voltaIntCell = p.intervaloVolta ? String(p.intervaloVolta) : "-";
+      let saidaCell = p.saida ? String(p.saida) : "-";
+
+      if (p.status && p.status !== "OK") {
+        entradaCell = saidaIntCell = voltaIntCell = saidaCell = String(p.status);
+      }
+
+      // calcula minutos com segurança
+      let minutosDia = 0;
       try {
-        const resp = await fetch(`https://brasilapi.com.br/api/feriados/v1/${ano}`);
-        if (resp.ok) {
-          const json = await resp.json();
-          feriadosNacionais = json.map((f) => ({ dateIso: f.date, date: formatDateToDDMM(f.date), name: f.name }));
-        } else {
-          console.warn("gerarRelatorio: BrasilAPI retornou não-ok:", resp.status);
+        if (p && (p.entrada || p.saida || p.status)) {
+          const val = calcMinutesWorkedForDay(p);
+          minutosDia = typeof val === "number" && !isNaN(val) ? val : 0;
         }
       } catch (err) {
-        console.warn("gerarRelatorio: falha ao buscar feriados nacionais:", err);
+        console.warn("Erro calc minutos para", iso, err);
       }
 
-      const feriadosRegionaisFromText = parseRegionalHolidaysText(regionalHolidaysText);
-      const todosFeriados = [...feriadosNacionais, ...feriadosRegionaisFromText];
+      totalMinutesMonth += minutosDia;
 
-      const rows = [];
-      let totalMinutesMonth = 0;
-      const daysSorted = [...monthObj.days].sort((a, b) => a.id.localeCompare(b.id));
-      for (const p of daysSorted) {
-        const iso = p.id;
-        const dateObj = new Date(iso + "T00:00:00");
-        const dataFormatada = iso.split("-").reverse().join("/");
-        const weekday = dateObj.toLocaleDateString("pt-BR", { weekday: "long" });
-        const ddmm = formatDateToDDMM(iso);
+      rows.push([
+        dataFormatada,
+        diaLabel,
+        entradaCell,
+        saidaIntCell,
+        voltaIntCell,
+        saidaCell,
+      ]);
+    }
 
-        const feriadoMatchIso = todosFeriados.find((f) => f.dateIso === iso);
-        const feriadoMatchDDMM = todosFeriados.find((f) => f.date === ddmm && !f.dateIso);
-        const feriadoMatch = feriadoMatchIso || feriadoMatchDDMM;
+    // debug: o que será enviado ao autotable
+    console.log("gerarRelatorio: rows geradas (total):", rows.length, rows);
 
-        const diaLabel = feriadoMatch ? `${capitalize(weekday)} (Feriado)` : capitalize(weekday);
+    // monta PDF
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
 
-        let entradaCell = p.entrada || "-";
-        let saidaIntCell = p.intervaloSaida || "-";
-        let voltaIntCell = p.intervaloVolta || "-";
-        let saidaCell = p.saida || "-";
+    doc.setFontSize(16);
+    doc.text("Relatório Mensal de Pontos", 40, 50);
+    doc.setFontSize(11);
+    doc.text(`Funcionário: ${funcionario.nome || "-"}`, 40, 72);
+    doc.text(`Loja: ${loja}`, 40, 88);
+    doc.text(`Mês de referência: ${capitalize(nomeMes)}`, 40, 104);
 
-        if (p.status && p.status !== "OK") {
-          entradaCell = saidaIntCell = voltaIntCell = saidaCell = p.status;
-        }
-
-        const minutosDia = calcMinutesWorkedForDay(p);
-        totalMinutesMonth += minutosDia;
-
-        rows.push([
-          dataFormatada,
-          diaLabel,
-          entradaCell,
-          saidaIntCell,
-          voltaIntCell,
-          saidaCell,
-        ]);
-      }
-
-      const doc = new jsPDF({ unit: "pt", format: "a4" });
-
-      doc.setFontSize(16);
-      doc.text("Relatório Mensal de Pontos", 40, 50);
-      doc.setFontSize(11);
-      doc.text(`Funcionário: ${funcionario.nome || "-"}`, 40, 72);
-      doc.text(`Loja: ${loja}`, 40, 88);
-      doc.text(`Mês de referência: ${capitalize(nomeMes)}`, 40, 104);
-
-      autoTable(doc, {
+    autoTable(doc, {
   startY: 125,
   head: [["Data", "Dia", "Entrada", "Saída Int.", "Volta Int.", "Saída"]],
   body: rows,
   theme: "grid",
   headStyles: { fillColor: [41, 128, 185], textColor: 255 },
-  styles: { fontSize: 10, cellPadding: 6, textColor: 0, fillColor: [255, 255, 255] },
+  styles: { fontSize: 10, cellPadding: 6, textColor: 0 },
   margin: { left: 40, right: 40 },
 
-  // DESENHA a "zebra" manualmente após cada célula desenhada
-  didDrawCell: function (data) {
-    // apenas para as linhas do body (dados)
-    if (data.section === "body" && data.row && typeof data.row.index === "number") {
-      const rowIndex = data.row.index; // 0-based
-      const isOdd = rowIndex % 2 === 1; // ajuste para trocar par/ímpar
+  // DESENHA A ZEBRA de forma robusta
+  willDrawCell: function (data) {
+    // Somente para linhas do corpo, e apenas na primeira coluna
+    if (data.section !== "body" || data.column.index !== 0) return;
 
-      if (isOdd) {
-        // coordenadas e dimensões da célula atual
-        const x = data.cell.x;
-        const y = data.cell.y;
-        const w = data.cell.width;
-        const h = data.cell.height;
+    try {
+      const rowIndex = Number(data.row.index);
+      if (!Number.isFinite(rowIndex)) return;
 
-        // cor de fundo da linha (cinza claro). Ajuste se quiser outro tom.
-        doc.setFillColor(245, 245, 245); // RGB
+      // fallback chain para calcular X (início da tabela)
+      const tableStartX = (data.table && Number.isFinite(data.table.startX))
+        ? data.table.startX
+        : (data.table && data.table.styles && Number.isFinite(data.table.styles.margin?.left))
+          ? data.table.styles.margin.left
+          : (data.table && data.table.margin && Number.isFinite(data.table.margin.left))
+            ? data.table.margin.left
+            : (data.cell && Number.isFinite(data.cell.x))
+              ? data.cell.x
+              : null;
 
-        // desenha retângulo preenchido por cima da célula
-        // usamos 'F' (fill) para preencher sem traço
-        doc.rect(x, y, w, h, "F");
-
-        // OBS: o texto já foi desenhado pelo autotable, então não precisamos redesenhar
+      // tenta obter largura total da tabela por vários caminhos
+      let tableWidth = null;
+      if (data.table && Number.isFinite(data.table.width)) {
+        tableWidth = data.table.width;
+      } else if (Array.isArray(data.row.cells) && data.row.cells.length > 0) {
+        tableWidth = data.row.cells.reduce((acc, c) => {
+          const w = Number(c.width);
+          return acc + (Number.isFinite(w) ? w : 0);
+        }, 0);
+      } else if (data.table && Array.isArray(data.table.columns) && data.table.columns.length > 0) {
+        tableWidth = data.table.columns.reduce((acc, c) => {
+          const w = Number(c.width);
+          return acc + (Number.isFinite(w) ? w : 0);
+        }, 0);
       }
+
+      // fallback para y/height
+      const y = (data.row && Number.isFinite(data.row.y)) ? data.row.y : (data.cell && Number.isFinite(data.cell.y) ? data.cell.y : null);
+      const h = (data.row && Number.isFinite(data.row.height)) ? data.row.height : (data.cell && Number.isFinite(data.cell.height) ? data.cell.height : null);
+
+      // se qualquer valor essencial for inválido, aborta sem desenhar
+      if (![tableStartX, tableWidth, y, h].every(v => Number.isFinite(v) && v > 0)) {
+        return;
+      }
+
+      // Alternância: pinta linhas pares (ou ímpares) — ajustar aqui se quiser inverter
+      const isEven = rowIndex % 2 === 0;
+
+      // Escolha de cor (ex.: cinza claro) — pode trocar para [230,240,255] se preferir azul
+      const fillColor = isEven ? [245, 245, 245] : [255, 255, 255];
+
+      doc.setFillColor(...fillColor);
+      // "F" = fill sem stroke
+      doc.rect(tableStartX, y, tableWidth, h, "F");
+    } catch (err) {
+      // nunca deixe o PDF falhar por conta da zebra — logue no console para debug
+      // console.warn("Zebra draw skipped (willDrawCell) due to error:", err, data);
     }
   },
 });
 
-      const finalY = doc.lastAutoTable ? doc.lastAutoTable.finalY : 140;
-      let offset = finalY + 20;
-      const feriadosNoMes = todosFeriados.filter((f) => {
-        if (f.dateIso) {
-          return f.dateIso.startsWith(`${ano}-${String(mesIndex + 1).padStart(2, "0")}`);
-        }
-        if (f.date) {
-          const parts = f.date.split("/");
-          if (parts.length >= 2) {
-            const mm = parts[1];
-            return mm === String(mesIndex + 1).padStart(2, "0");
-          }
-        }
-        return false;
-      });
-
-      if (feriadosNoMes.length > 0) {
-        doc.setFontSize(12);
-        doc.text("Feriados no mês:", 40, offset);
-        offset += 16;
-        doc.setFontSize(10);
-        feriadosNoMes.forEach((f) => {
-          const label = `${f.date}${f.name ? " — " + f.name : ""}`;
-          doc.text(label, 50, offset);
-          offset += 14;
-        });
+    // lista de feriados no mês (mostrando data, nome e tipo)
+    const feriadosNoMes = todosFeriados.filter((f) => {
+      if (f.dateIso) {
+        return f.dateIso.startsWith(`${ano}-${String(mesIndex + 1).padStart(2, "0")}`);
       }
+      if (f.date) {
+        const parts = f.date.split("/");
+        if (parts.length >= 2) {
+          const mm = parts[1];
+          return mm === String(mesIndex + 1).padStart(2, "0");
+        }
+      }
+      return false;
+    });
 
-      const totalHH = Math.floor(totalMinutesMonth / 60);
-      const totalMM = totalMinutesMonth % 60;
-      const totalTexto = `${totalHH}h ${totalMM}m`;
-
+    let offset = doc.lastAutoTable ? doc.lastAutoTable.finalY + 20 : 125 + rows.length * 12 + 20;
+    if (feriadosNoMes.length > 0) {
       doc.setFontSize(12);
-      doc.text(`Total de horas trabalhadas no mês: ${totalTexto}`, 40, offset + 24);
-
-      const nomeArquivo = `Relatorio_${capitalize(nomeMes).replace(/\s+/g, "")}_${funcionario.nome ? slugify(funcionario.nome) : funcionarioId}.pdf`;
-      doc.save(nomeArquivo);
-    } catch (err) {
-      console.error("gerarRelatorio: erro:", err);
-      alert("Erro ao gerar relatório. Veja o console para detalhes.");
+      doc.text("Feriados no mês:", 40, offset);
+      offset += 16;
+      doc.setFontSize(10);
+      feriadosNoMes.forEach((f) => {
+        const dateLabel = f.dateIso ? f.dateIso.split("-").reverse().join("/") : f.date;
+        const typeLabel = f.type ? ` (${f.type})` : "";
+        const label = `${dateLabel} — ${f.name}${typeLabel}`;
+        doc.text(label, 50, offset);
+        offset += 14;
+      });
     }
-  };
+
+    // total de horas
+    const totalFmt = minutesToHHMM(totalMinutesMonth);
+    doc.setFontSize(11);
+    const afterY = offset + 12;
+    doc.text(`Total de horas trabalhadas no mês: ${totalFmt}`, 40, afterY + 18);
+
+    const nomeArquivo = `Relatorio_${capitalize(nomeMes).replace(/\s+/g, "")}_${funcionario.nome ? slugify(funcionario.nome) : funcionarioId}.pdf`;
+    doc.save(nomeArquivo);
+  } catch (err) {
+    console.error("gerarRelatorio: erro:", err);
+    alert("Erro ao gerar relatório. Veja o console para detalhes.");
+  }
+};
+
 // ☁️ Faz upload da imagem para o Cloudinary e salva no Firestore
 const uploadPhotoToFirebase = async (file) => {
   try {
@@ -1076,7 +1149,7 @@ const handleFileUpload = async (e) => {
           </Paper>
         )}
         <Typography variant="h6" mb={2} sx={{ color: "#fff", display: "flex", alignItems: "center", gap: 1 }}>
-          Histórico de Pontos
+          📝 Histórico de Ponto
         </Typography>
         {months.map((month) => (
           <Accordion key={month.monthKey} defaultExpanded={month.monthKey === currentMonthKey} sx={{ bgcolor: "#1a1a1a", color: "white", mb: 1 }}>
@@ -1259,16 +1332,28 @@ function calcMinutesWorkedForDay(p) {
 // groupByMonth for outside helper usage if needed
 function groupByMonth(pontosList) {
   const map = new Map();
+
   pontosList.forEach((p) => {
-    const date = new Date(p.id + "T00:00:00");
-    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-    const label = new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(date);
-    if (!map.has(key)) map.set(key, { label, days: [], totalMinutes: 0 });
-    const entry = map.get(key);
+    if (!p?.id) return;
+    const [y, m, d] = p.id.split("-").map(Number);
+    const monthKey = `${y}-${String(m).padStart(2, "0")}`;
+    const label = new Intl.DateTimeFormat("pt-BR", {
+      month: "long",
+      year: "numeric",
+    }).format(new Date(y, m - 1, 1));
+
+    if (!map.has(monthKey)) map.set(monthKey, { label, days: [], totalMinutes: 0 });
+
+    const entry = map.get(monthKey);
     entry.days.push(p);
     entry.totalMinutes += calcMinutesWorkedForDay(p);
   });
+
   return Array.from(map.entries())
     .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-    .map(([monthKey, v]) => ({ monthKey, ...v }));
+    .map(([monthKey, v]) => ({
+      monthKey,
+      ...v,
+      days: v.days.sort((a, b) => a.id.localeCompare(b.id)), // garante ordem dos dias
+    }));
 }

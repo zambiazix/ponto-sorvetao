@@ -34,12 +34,14 @@ const ADMIN_UID = "mD3ie8YGmgaup2VVDpKuMBltXgp2";
 
 export default function Painel() {
   const navigate = useNavigate();
-  const { lojaId } = useParams();
+  const { lojaId: lojaParam } = useParams();
   const [funcionarios, setFuncionarios] = useState([]);
   const [novoNome, setNovoNome] = useState("");
   const [carregando, setCarregando] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isGerente, setIsGerente] = useState(false);
   const [nomeLoja, setNomeLoja] = useState("");
+  const [lojaId, setLojaId] = useState(lojaParam || "");
   const [modelosCarregados, setModelosCarregados] = useState(false);
 
   // ✅ Carrega os modelos uma única vez no início
@@ -62,21 +64,34 @@ export default function Painel() {
     loadModels();
   }, []);
 
+  // 👤 Verifica usuário logado (admin ou gerente)
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      setIsAdmin(!!user && user.uid === ADMIN_UID);
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        if (user.uid === ADMIN_UID) {
+          setIsAdmin(true);
+          setLojaId(lojaParam); // admin acessa via parâmetro
+        } else {
+          // 🔍 Verifica se é um gerente
+          const gerenteDoc = await getDoc(doc(db, "gerentes", user.uid));
+          if (gerenteDoc.exists()) {
+            setIsGerente(true);
+            setLojaId(gerenteDoc.data().lojaId); // loja fixa do gerente
+          }
+        }
+      }
     });
     return () => unsub();
-  }, []);
+  }, [lojaParam]);
 
   const handleLogout = async () => {
     await signOut(auth);
     navigate("/");
   };
 
-  const carregarFuncionarios = async () => {
+  const carregarFuncionarios = async (idLoja) => {
     try {
-      const q = query(collection(db, "lojas", lojaId, "funcionarios"));
+      const q = query(collection(db, "lojas", idLoja, "funcionarios"));
       const snap = await getDocs(q);
       const lista = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
       setFuncionarios(lista);
@@ -87,13 +102,13 @@ export default function Painel() {
     }
   };
 
-  const carregarNomeLoja = async () => {
+  const carregarNomeLoja = async (idLoja) => {
     try {
-      const lojaSnap = await getDoc(doc(db, "lojas", lojaId));
+      const lojaSnap = await getDoc(doc(db, "lojas", idLoja));
       if (lojaSnap.exists()) {
         setNomeLoja(lojaSnap.data().nome);
       } else {
-        setNomeLoja(lojaId);
+        setNomeLoja(idLoja);
       }
     } catch (err) {
       console.error("Erro ao buscar nome da loja:", err);
@@ -101,24 +116,29 @@ export default function Painel() {
   };
 
   useEffect(() => {
-    carregarFuncionarios();
-    carregarNomeLoja();
+    if (lojaId) {
+      carregarFuncionarios(lojaId);
+      carregarNomeLoja(lojaId);
+    }
   }, [lojaId]);
 
   const adicionarFuncionario = async (e) => {
     e.preventDefault();
-    if (!novoNome.trim()) return;
+    if (!novoNome.trim() || !lojaId) return;
     await addDoc(collection(db, "lojas", lojaId, "funcionarios"), {
       nome: novoNome,
     });
     setNovoNome("");
-    carregarFuncionarios();
+    carregarFuncionarios(lojaId);
   };
 
   // 🧠 Função de reconhecimento facial
   const handleReconhecimentoFacial = async (funcId, nomeFuncionario) => {
     const user = auth.currentUser;
-    if (user && user.uid === ADMIN_UID) {
+    if (!user || !lojaId) return;
+
+    // Admin ou gerente acessam diretamente o perfil
+    if (user.uid === ADMIN_UID || isGerente) {
       navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
       return;
     }
@@ -239,13 +259,7 @@ export default function Painel() {
         Versão 1.0 - Criado por Zambiazi
       </Box>
 
-      <Box
-        display="flex"
-        alignItems="center"
-        justifyContent="center"
-        mb={3}
-        gap={1.5}
-      >
+      <Box display="flex" alignItems="center" justifyContent="center" mb={3} gap={1.5}>
         <img
           src="/logo.jpg"
           alt="Logo da Loja"
@@ -262,21 +276,8 @@ export default function Painel() {
         </Typography>
       </Box>
 
-      <Paper
-        sx={{
-          p: 3,
-          mb: 4,
-          bgcolor: "#1e1e1e",
-          color: "white",
-          borderRadius: 3,
-        }}
-      >
-        <Box
-          component="form"
-          onSubmit={adicionarFuncionario}
-          display="flex"
-          gap={2}
-        >
+      <Paper sx={{ p: 3, mb: 4, bgcolor: "#1e1e1e", color: "white", borderRadius: 3 }}>
+        <Box component="form" onSubmit={adicionarFuncionario} display="flex" gap={2}>
           <TextField
             label="Nome do funcionário"
             value={novoNome}
@@ -288,25 +289,13 @@ export default function Painel() {
             }}
             InputLabelProps={{ style: { color: "#bbb" } }}
           />
-          <Button
-            variant="contained"
-            color="primary"
-            type="submit"
-            startIcon={<AddIcon />}
-          >
+          <Button variant="contained" color="primary" type="submit" startIcon={<AddIcon />}>
             Adicionar
           </Button>
         </Box>
       </Paper>
 
-      <Paper
-        sx={{
-          p: 2,
-          bgcolor: "#1e1e1e",
-          color: "white",
-          borderRadius: 3,
-        }}
-      >
+      <Paper sx={{ p: 2, bgcolor: "#1e1e1e", color: "white", borderRadius: 3 }}>
         {funcionarios.length === 0 ? (
           <Typography color="gray" align="center">
             Nenhum funcionário cadastrado.
@@ -321,9 +310,7 @@ export default function Painel() {
                       variant="contained"
                       color="success"
                       size="small"
-                      onClick={() =>
-                        handleReconhecimentoFacial(func.id, func.nome)
-                      }
+                      onClick={() => handleReconhecimentoFacial(func.id, func.nome)}
                       startIcon={<PersonIcon />}
                     >
                       Ver Perfil
@@ -340,25 +327,25 @@ export default function Painel() {
       </Paper>
 
       <Stack direction="row" spacing={2} justifyContent="center" mt={4}>
+        {(isAdmin || isGerente) && (
+          <Button
+            variant="contained"
+            color="secondary"
+            startIcon={<CalendarMonthIcon />}
+            onClick={() => navigate("/escala-folgas", { state: { funcionarios } })}
+          >
+            Escala de Folgas
+          </Button>
+        )}
         {isAdmin && (
-          <>
-            <Button
-  variant="contained"
-  color="secondary"
-  startIcon={<CalendarMonthIcon />}
-  onClick={() => navigate("/escala-folgas", { state: { funcionarios } })}
->
-  Escala de Folgas
-</Button>
-            <Button
-              variant="outlined"
-              color="secondary"
-              startIcon={<ArrowBackIcon />}
-              onClick={() => navigate("/admin")}
-            >
-              Painel Admin
-            </Button>
-          </>
+          <Button
+            variant="outlined"
+            color="secondary"
+            startIcon={<ArrowBackIcon />}
+            onClick={() => navigate("/admin")}
+          >
+            Painel Admin
+          </Button>
         )}
         <Button
           variant="contained"
