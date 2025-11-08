@@ -301,23 +301,31 @@ export default function Painel() {
       </Box>
 
       {/* Adicionar Funcionário */}
-      <Paper sx={{ p: 3, mb: 4, bgcolor: "#1e1e1e", color: "white", borderRadius: 3 }}>
-        <Box component="form" onSubmit={adicionarFuncionario} display="flex" gap={2}>
-          <TextField
-            label="Nome do funcionário"
-            value={novoNome}
-            onChange={(e) => setNovoNome(e.target.value)}
-            fullWidth
-            variant="filled"
-            InputProps={{ style: { backgroundColor: "#2a2a2a", color: "white" } }}
-            InputLabelProps={{ style: { color: "#bbb" } }}
-          />
-          <Button variant="contained" color="primary" type="submit" startIcon={<AddIcon />}>
-            Adicionar
-          </Button>
-        </Box>
-      </Paper>
-
+      {(isAdmin || isGerente) && (
+  <Paper
+    sx={{ p: 3, mb: 4, bgcolor: "#1e1e1e", color: "white", borderRadius: 3 }}
+  >
+    <Box component="form" onSubmit={adicionarFuncionario} display="flex" gap={2}>
+      <TextField
+        label="Nome do funcionário"
+        value={novoNome}
+        onChange={(e) => setNovoNome(e.target.value)}
+        fullWidth
+        variant="filled"
+        InputProps={{ style: { backgroundColor: "#2a2a2a", color: "white" } }}
+        InputLabelProps={{ style: { color: "#bbb" } }}
+      />
+      <Button
+        variant="contained"
+        color="primary"
+        type="submit"
+        startIcon={<AddIcon />}
+      >
+        Adicionar
+      </Button>
+    </Box>
+  </Paper>
+)}
       {/* Lista de Funcionários */}
       <Paper sx={{ p: 2, bgcolor: "#1e1e1e", color: "white", borderRadius: 3 }}>
         {funcionarios.length === 0 ? (

@@ -53,23 +53,40 @@ const EscalaFolgas = () => {
     setFuncionarioCores({ ...funcionarioCores, [funcId]: color });
   };
 
+  // ✅ NOVA FUNÇÃO ATUALIZADA
   const gerarImagem = async () => {
-    const canvas = await html2canvas(printRef.current);
-    const dataUrl = canvas.toDataURL("image/png");
-    const blob = await (await fetch(dataUrl)).blob();
-    const file = new File([blob], "escala.png", { type: "image/png" });
+    try {
+      const canvas = await html2canvas(printRef.current);
+      const base64Image = canvas.toDataURL("image/png");
 
-    const url = `https://api.whatsapp.com/send?text=Escala de folgas ${format(
-      dataAtual,
-      "MMMM yyyy",
-      { locale: ptBR }
-    )}`;
-    window.open(url, "_blank");
+      const res = await fetch(base64Image);
+      const blob = await res.blob();
+      const file = new File([blob], "escala-folgas.png", { type: "image/png" });
 
-    const a = document.createElement("a");
-    a.href = dataUrl;
-    a.download = "escala-folgas.png";
-    a.click();
+      const titulo = `Escala de Folgas — ${format(dataAtual, "MMMM yyyy", {
+        locale: ptBR,
+      }).replace(/^\w/, (c) => c.toUpperCase())}`;
+
+      // 🔄 Se o dispositivo/navegador suportar compartilhamento nativo
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          title: titulo,
+          text: "Segue a escala da semana 📅",
+          files: [file],
+        });
+      } else {
+        // 🔽 Fallback — baixar imagem se o compartilhamento não for suportado
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "escala-folgas.png";
+        a.click();
+        alert("Compartilhamento direto não suportado, imagem baixada.");
+      }
+    } catch (err) {
+      console.error("Erro ao gerar imagem:", err);
+      alert("Erro ao tentar gerar ou compartilhar imagem.");
+    }
   };
 
   return (
@@ -87,8 +104,10 @@ const EscalaFolgas = () => {
 
       <Typography variant="h5" mb={2}>
         Escala de Folgas —{" "}
-        {format(dataAtual, "MMMM yyyy", { locale: ptBR })
-          .replace(/^\w/, (c) => c.toUpperCase())}
+        {format(dataAtual, "MMMM yyyy", { locale: ptBR }).replace(
+          /^\w/,
+          (c) => c.toUpperCase()
+        )}
       </Typography>
 
       <Stack direction="row" spacing={2} mb={2}>
