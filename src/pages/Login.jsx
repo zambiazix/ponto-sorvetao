@@ -46,7 +46,7 @@ export default function Login() {
       const userCredential = await signInWithEmailAndPassword(auth, email, senha);
       const user = userCredential.user;
 
-      // 🔐 Salvar login local se "Conectar automaticamente"
+      // 🔐 Lembrar login
       if (lembrar) {
         localStorage.setItem("userEmail", email);
         localStorage.setItem("userSenha", senha);
@@ -61,7 +61,21 @@ export default function Login() {
         return;
       }
 
-      // 🏪 Loja: buscar pelo e-mail no Firestore
+      // 🧑‍💼 Gerente
+      const gerenteRef = doc(db, "gerentes", user.uid);
+      const gerenteSnap = await getDoc(gerenteRef);
+      if (gerenteSnap.exists()) {
+        const lojaId = gerenteSnap.data().lojaId;
+        if (lojaId) {
+          navigate(`/loja/${lojaId}/painel`);
+          return;
+        } else {
+          setErro("Este gerente não possui loja vinculada.");
+          return;
+        }
+      }
+
+      // 🏪 Loja comum
       const lojaRef = doc(db, "lojas", email.trim().toLowerCase());
       const lojaSnap = await getDoc(lojaRef);
 
@@ -114,13 +128,13 @@ export default function Login() {
           />
         </Box>
 
-        <Typography
-          variant="h5"
-          mb={2}
-          sx={{ color: "white", fontWeight: "bold" }}
-        >
-          Acesso ao Sistema
-        </Typography>
+<Typography
+  variant="h5"
+  mb={2}
+  sx={{ fontWeight: "bold", color: "white" }}
+>
+  Acesso ao Sistema
+</Typography>
 
         {erro && (
           <Typography color="error" variant="body2" mb={2}>
@@ -136,12 +150,8 @@ export default function Login() {
             margin="normal"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            InputProps={{
-              style: { color: "white" },
-            }}
-            InputLabelProps={{
-              style: { color: "#bbb" },
-            }}
+            InputProps={{ style: { color: "white" } }}
+            InputLabelProps={{ style: { color: "#bbb" } }}
           />
           <TextField
             label="Senha"
@@ -165,9 +175,7 @@ export default function Login() {
                 </InputAdornment>
               ),
             }}
-            InputLabelProps={{
-              style: { color: "#bbb" },
-            }}
+            InputLabelProps={{ style: { color: "#bbb" } }}
           />
 
           <FormControlLabel

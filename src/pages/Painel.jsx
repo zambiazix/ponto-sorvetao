@@ -9,6 +9,8 @@ import {
   query,
   doc,
   getDoc,
+  updateDoc,
+  deleteDoc,
 } from "firebase/firestore";
 import {
   Container,
@@ -22,12 +24,15 @@ import {
   Divider,
   Stack,
   Box,
+  IconButton,
 } from "@mui/material";
 import LogoutIcon from "@mui/icons-material/Logout";
 import AddIcon from "@mui/icons-material/Add";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import PersonIcon from "@mui/icons-material/Person";
 import CalendarMonthIcon from "@mui/icons-material/CalendarMonth";
+import EditIcon from "@mui/icons-material/Edit";
+import DeleteIcon from "@mui/icons-material/Delete";
 import * as faceapi from "@vladmandic/face-api";
 
 const ADMIN_UID = "mD3ie8YGmgaup2VVDpKuMBltXgp2";
@@ -44,7 +49,7 @@ export default function Painel() {
   const [lojaId, setLojaId] = useState(lojaParam || "");
   const [modelosCarregados, setModelosCarregados] = useState(false);
 
-  // ✅ Carrega os modelos uma única vez no início
+  // ✅ Carrega os modelos uma única vez
   useEffect(() => {
     const loadModels = async () => {
       try {
@@ -54,13 +59,12 @@ export default function Painel() {
           faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
           faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
         ]);
-        console.log("✅ Modelos de face-api carregados com sucesso!");
+        console.log("✅ Modelos carregados!");
         setModelosCarregados(true);
       } catch (error) {
         console.error("❌ Erro ao carregar modelos:", error);
       }
     };
-
     loadModels();
   }, []);
 
@@ -70,25 +74,40 @@ export default function Painel() {
       if (user) {
         if (user.uid === ADMIN_UID) {
           setIsAdmin(true);
-          setLojaId(lojaParam); // admin acessa via parâmetro
-        } else {
-          // 🔍 Verifica se é um gerente
-          const gerenteDoc = await getDoc(doc(db, "gerentes", user.uid));
-          if (gerenteDoc.exists()) {
+          setLojaId(lojaParam);
+          setCarregando(false);
+          return;
+        }
+
+        const gerenteRef = doc(db, "gerentes", user.uid);
+        const gerenteSnap = await getDoc(gerenteRef);
+
+        if (gerenteSnap.exists()) {
+          const lojaGerente = gerenteSnap.data().lojaId;
+          if (lojaGerente) {
+            console.log("✅ Gerente vinculado à loja:", lojaGerente);
             setIsGerente(true);
-            setLojaId(gerenteDoc.data().lojaId); // loja fixa do gerente
+            setLojaId(lojaGerente);
+            setCarregando(false);
+            return;
+          } else {
+            console.warn("⚠️ Gerente sem loja vinculada!");
           }
         }
+        setCarregando(false);
+      } else {
+        navigate("/");
       }
     });
     return () => unsub();
-  }, [lojaParam]);
+  }, [navigate, lojaParam]);
 
   const handleLogout = async () => {
     await signOut(auth);
     navigate("/");
   };
 
+  // 📦 Carregar funcionários
   const carregarFuncionarios = async (idLoja) => {
     try {
       const q = query(collection(db, "lojas", idLoja, "funcionarios"));
@@ -105,11 +124,8 @@ export default function Painel() {
   const carregarNomeLoja = async (idLoja) => {
     try {
       const lojaSnap = await getDoc(doc(db, "lojas", idLoja));
-      if (lojaSnap.exists()) {
-        setNomeLoja(lojaSnap.data().nome);
-      } else {
-        setNomeLoja(idLoja);
-      }
+      if (lojaSnap.exists()) setNomeLoja(lojaSnap.data().nome);
+      else setNomeLoja(idLoja);
     } catch (err) {
       console.error("Erro ao buscar nome da loja:", err);
     }
@@ -122,46 +138,69 @@ export default function Painel() {
     }
   }, [lojaId]);
 
+  // ➕ Adicionar funcionário
   const adicionarFuncionario = async (e) => {
     e.preventDefault();
     if (!novoNome.trim() || !lojaId) return;
-    await addDoc(collection(db, "lojas", lojaId, "funcionarios"), {
-      nome: novoNome,
-    });
+    await addDoc(collection(db, "lojas", lojaId, "funcionarios"), { nome: novoNome });
     setNovoNome("");
     carregarFuncionarios(lojaId);
   };
 
-  // 🧠 Função de reconhecimento facial
+  // ✏️ Editar funcionário
+  const editarFuncionario = async (func) => {
+    if (!isAdmin && !isGerente) return alert("Somente admin ou gerente podem editar.");
+    const novoNome = prompt("Digite o novo nome do funcionário:", func.nome);
+    if (!novoNome || novoNome.trim() === "") return;
+    try {
+      const funcRef = doc(db, "lojas", lojaId, "funcionarios", func.id);
+      await updateDoc(funcRef, { nome: novoNome });
+      alert("✅ Funcionário atualizado com sucesso!");
+      carregarFuncionarios(lojaId);
+    } catch (err) {
+      console.error("Erro ao editar funcionário:", err);
+      alert("Erro ao editar funcionário.");
+    }
+  };
+
+  // 🗑️ Excluir funcionário
+  const excluirFuncionario = async (func) => {
+    if (!isAdmin && !isGerente) return alert("Somente admin ou gerente podem excluir.");
+    const confirmar = window.confirm(`Tem certeza que deseja excluir ${func.nome}?`);
+    if (!confirmar) return;
+    try {
+      const funcRef = doc(db, "lojas", lojaId, "funcionarios", func.id);
+      await deleteDoc(funcRef);
+      alert("🗑️ Funcionário removido com sucesso!");
+      carregarFuncionarios(lojaId);
+    } catch (err) {
+      console.error("Erro ao excluir funcionário:", err);
+      alert("Erro ao excluir funcionário.");
+    }
+  };
+
+  // 🧠 Reconhecimento facial
   const handleReconhecimentoFacial = async (funcId, nomeFuncionario) => {
     const user = auth.currentUser;
     if (!user || !lojaId) return;
 
-    // Admin ou gerente acessam diretamente o perfil
     if (user.uid === ADMIN_UID || isGerente) {
       navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
       return;
     }
 
     if (!modelosCarregados) {
-      alert("⚙️ Aguarde o carregamento dos modelos de reconhecimento...");
+      alert("⚙️ Aguarde o carregamento dos modelos...");
       return;
     }
 
     try {
       const funcRef = doc(db, "lojas", lojaId, "funcionarios", funcId);
       const funcSnap = await getDoc(funcRef);
-      if (!funcSnap.exists()) {
-        alert("Funcionário não encontrado.");
-        return;
-      }
-
+      if (!funcSnap.exists()) return alert("Funcionário não encontrado.");
       const funcData = funcSnap.data();
 
-      if (!funcData.fotoReferencia) {
-        alert("⚠️ Este funcionário ainda não possui imagem cadastrada.");
-        return;
-      }
+      if (!funcData.fotoReferencia) return alert("Funcionário sem imagem cadastrada.");
 
       const referenceImage = await faceapi.fetchImage(funcData.fotoReferencia);
       const labeledDescriptor = await faceapi
@@ -169,15 +208,10 @@ export default function Painel() {
         .withFaceLandmarks()
         .withFaceDescriptor();
 
-      if (!labeledDescriptor) {
-        alert("❌ Não foi possível processar a imagem de referência.");
-        return;
-      }
+      if (!labeledDescriptor) return alert("Erro ao processar imagem de referência.");
 
       const faceMatcher = new faceapi.FaceMatcher(
-        new faceapi.LabeledFaceDescriptors(nomeFuncionario, [
-          labeledDescriptor.descriptor,
-        ])
+        new faceapi.LabeledFaceDescriptors(nomeFuncionario, [labeledDescriptor.descriptor])
       );
 
       const video = document.createElement("video");
@@ -197,7 +231,6 @@ export default function Painel() {
       video.srcObject = stream;
 
       alert("📸 Olhe para a câmera por alguns segundos...");
-
       await new Promise((res) => setTimeout(res, 4000));
 
       const detection = await faceapi
@@ -208,13 +241,9 @@ export default function Painel() {
       stream.getTracks().forEach((t) => t.stop());
       video.remove();
 
-      if (!detection) {
-        alert("❌ Nenhum rosto detectado. Tente novamente.");
-        return;
-      }
+      if (!detection) return alert("❌ Nenhum rosto detectado.");
 
       const bestMatch = faceMatcher.findBestMatch(detection.descriptor);
-
       if (bestMatch.label === nomeFuncionario && bestMatch.distance < 0.5) {
         alert("✅ Rosto reconhecido com sucesso!");
         navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
@@ -227,6 +256,7 @@ export default function Painel() {
     }
   };
 
+  // 🕓 Tela de carregamento
   if (carregando) {
     return (
       <Container sx={{ bgcolor: "#121212", minHeight: "100vh", color: "white" }}>
@@ -237,15 +267,9 @@ export default function Painel() {
     );
   }
 
+  // 🧱 UI
   return (
-    <Container
-      sx={{
-        bgcolor: "#121212",
-        minHeight: "100vh",
-        py: 4,
-        color: "white",
-      }}
-    >
+    <Container sx={{ bgcolor: "#121212", minHeight: "100vh", py: 4, color: "white" }}>
       <Box
         sx={{
           position: "fixed",
@@ -276,6 +300,7 @@ export default function Painel() {
         </Typography>
       </Box>
 
+      {/* Adicionar Funcionário */}
       <Paper sx={{ p: 3, mb: 4, bgcolor: "#1e1e1e", color: "white", borderRadius: 3 }}>
         <Box component="form" onSubmit={adicionarFuncionario} display="flex" gap={2}>
           <TextField
@@ -284,9 +309,7 @@ export default function Painel() {
             onChange={(e) => setNovoNome(e.target.value)}
             fullWidth
             variant="filled"
-            InputProps={{
-              style: { backgroundColor: "#2a2a2a", color: "white" },
-            }}
+            InputProps={{ style: { backgroundColor: "#2a2a2a", color: "white" } }}
             InputLabelProps={{ style: { color: "#bbb" } }}
           />
           <Button variant="contained" color="primary" type="submit" startIcon={<AddIcon />}>
@@ -295,6 +318,7 @@ export default function Painel() {
         </Box>
       </Paper>
 
+      {/* Lista de Funcionários */}
       <Paper sx={{ p: 2, bgcolor: "#1e1e1e", color: "white", borderRadius: 3 }}>
         {funcionarios.length === 0 ? (
           <Typography color="gray" align="center">
@@ -306,15 +330,27 @@ export default function Painel() {
               <Box key={func.id}>
                 <ListItem
                   secondaryAction={
-                    <Button
-                      variant="contained"
-                      color="success"
-                      size="small"
-                      onClick={() => handleReconhecimentoFacial(func.id, func.nome)}
-                      startIcon={<PersonIcon />}
-                    >
-                      Ver Perfil
-                    </Button>
+                    <Box display="flex" gap={1}>
+                      <Button
+                        variant="contained"
+                        color="success"
+                        size="small"
+                        onClick={() => handleReconhecimentoFacial(func.id, func.nome)}
+                        startIcon={<PersonIcon />}
+                      >
+                        Ver Perfil
+                      </Button>
+                      {(isAdmin || isGerente) && (
+                        <>
+                          <IconButton color="warning" onClick={() => editarFuncionario(func)}>
+                            <EditIcon />
+                          </IconButton>
+                          <IconButton color="error" onClick={() => excluirFuncionario(func)}>
+                            <DeleteIcon />
+                          </IconButton>
+                        </>
+                      )}
+                    </Box>
                   }
                 >
                   <ListItemText primary={func.nome} />
@@ -326,6 +362,7 @@ export default function Painel() {
         )}
       </Paper>
 
+      {/* Rodapé */}
       <Stack direction="row" spacing={2} justifyContent="center" mt={4}>
         {(isAdmin || isGerente) && (
           <Button
@@ -347,12 +384,7 @@ export default function Painel() {
             Painel Admin
           </Button>
         )}
-        <Button
-          variant="contained"
-          color="error"
-          startIcon={<LogoutIcon />}
-          onClick={handleLogout}
-        >
+        <Button variant="contained" color="error" startIcon={<LogoutIcon />} onClick={handleLogout}>
           Sair
         </Button>
       </Stack>

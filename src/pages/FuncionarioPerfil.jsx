@@ -79,6 +79,8 @@ export default function FuncionarioPerfil() {
   const [lojaNome, setLojaNome] = useState("");
   const [mode, setMode] = useState("view"); // view | enroll
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isGerente, setIsGerente] = useState(false);
+  const [temPermissao, setTemPermissao] = useState(false);
   const [carregando, setCarregando] = useState(true);
   const [uploadingAtestado, setUploadingAtestado] = useState(false);
   // UI state for regional holidays text area
@@ -97,11 +99,33 @@ export default function FuncionarioPerfil() {
   const STATUS_OPTIONS = ["OK", "FOLGA", "ATESTADO", "FALTA", "FÉRIAS", "SUSPENSÃO", "DISPENSA"];
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      setIsAdmin(!!user && user.uid === ADMIN_UID);
-    });
-    return () => unsub();
-  }, []);
+  const unsub = onAuthStateChanged(auth, async (user) => {
+    if (!user) {
+      setIsAdmin(false);
+      setIsGerente(false);
+      setTemPermissao(false);
+      return;
+    }
+
+    const ehAdmin = user.uid === ADMIN_UID;
+    setIsAdmin(ehAdmin);
+
+    // 🔍 verifica se é gerente
+    try {
+      const gerenteRef = doc(db, "gerentes", user.uid);
+      const gerenteSnap = await getDoc(gerenteRef);
+      const ehGerente = gerenteSnap.exists();
+      setIsGerente(ehGerente);
+      setTemPermissao(ehAdmin || ehGerente);
+    } catch (err) {
+      console.error("Erro ao verificar gerente:", err);
+      setIsGerente(false);
+      setTemPermissao(ehAdmin);
+    }
+  });
+
+  return () => unsub();
+}, []);
 // Carrega modelos e dados iniciais
 useEffect(() => {
   const carregarTudo = async () => {
@@ -495,7 +519,7 @@ const carregarFuncionario = async () => {
   };
 
   const handleExcluirPonto = async (dayId) => {
-    if (!isAdmin) return alert("Somente o administrador pode excluir pontos.");
+    if (!temPermissao) return alert("Somente gerente ou admin pode ...");
     if (!window.confirm("Excluir este dia e todos os dados associados?")) return;
     try {
       await deleteDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId));
@@ -507,7 +531,7 @@ const carregarFuncionario = async () => {
   };
   // === EDIT MODAL HELPERS ===
   const openEditModal = (day) => {
-    if (!isAdmin) return alert("Somente admin pode editar pontos.");
+    if (!temPermissao) return alert("Somente gerente ou admin pode ...");
     setEditDayId(day.id);
     setEditValues({
       entrada: day.entrada || "",
@@ -561,7 +585,7 @@ const carregarFuncionario = async () => {
   };
   // Admin helper: allow clearing a single timestamp
   const clearTimestamp = async (dayId, field) => {
-    if (!isAdmin) return alert("Somente admin pode fazer isso.");
+    if (!temPermissao) return alert("Somente gerente ou admin pode ...");
     if (!window.confirm("Remover este horário?")) return;
     try {
       const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId);
@@ -661,8 +685,7 @@ const carregarFuncionario = async () => {
       return isoDate;
     }
   };
-// gerarRelatorio (substitua a função inteira por esta)
-// gerarRelatorio (substitua sua função inteira por esta)
+// ==== GERAR RELATÓRIO (PDF) ====
 const gerarRelatorio = async (monthObj) => {
   try {
     const [yearStr, monthStr] = monthObj.monthKey.split("-");
@@ -672,10 +695,11 @@ const gerarRelatorio = async (monthObj) => {
       month: "long",
       year: "numeric",
     });
+
     const funcionario = funcData || {};
     const loja = lojaNome || lojaId;
 
-    // buscar feriados nacionais (marca como 'Nacional')
+    // ====== BAIXA FERIADOS NACIONAIS ======
     let feriadosNacionais = [];
     try {
       const resp = await fetch(`https://brasilapi.com.br/api/feriados/v1/${ano}`);
@@ -689,67 +713,55 @@ const gerarRelatorio = async (monthObj) => {
         }));
       }
     } catch (err) {
-      console.warn("gerarRelatorio: falha ao buscar feriados nacionais:", err);
+      console.warn("Falha ao buscar feriados nacionais:", err);
     }
 
-    // feriados regionais/municipais vindos do textarea
-    const feriadosRegionaisFromText = (parseRegionalHolidaysText(regionalHolidaysText || "") || []).map(
-      (f) => ({ ...f, type: "Regional/Municipal" })
-    );
-
+    // ====== FERIADOS REGIONAIS ======
+    const feriadosRegionaisFromText = parseRegionalHolidaysText(regionalHolidaysText || "");
     const todosFeriados = [...feriadosNacionais, ...feriadosRegionaisFromText];
 
-    // GERAÇÃO DE ROWS: percorre TODO o mês, 1..N dias
+    const feriadosMap = new Map();
+    todosFeriados.forEach((f) => {
+      const key = f.dateIso || f.date;
+      if (key) {
+        if (!feriadosMap.has(key) || (f.type === "Nacional" && feriadosMap.get(key).type !== "Nacional")) {
+          feriadosMap.set(key, f);
+        }
+      }
+    });
+
+    // ===== LINHAS =====
     const rows = [];
     let totalMinutesMonth = 0;
     const diasNoMes = new Date(ano, mesIndex + 1, 0).getDate();
 
-    // debug: ver o conteúdo original vindo do monthObj
-    console.log("gerarRelatorio: monthObj.days (original)", monthObj.days);
-
     for (let dia = 1; dia <= diasNoMes; dia++) {
       const iso = `${ano}-${String(mesIndex + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
-      // usar Date(ano, mesIndex, dia) evita problemas de timezone
-      const dateObj = new Date(ano, mesIndex, dia);
-      const dataFormatada = iso.split("-").reverse().join("/");
-      const weekday = dateObj.toLocaleDateString("pt-BR", { weekday: "long" });
+      const p = (monthObj.days || []).find((d) => d.id === iso) || {};
+      const weekday = new Date(iso + "T00:00:00").toLocaleDateString("pt-BR", { weekday: "long" });
       const ddmm = formatDateToDDMM(iso);
-
-      // procura o ponto exatamente pelo id ISO
-      const p = (Array.isArray(monthObj.days) && monthObj.days.find((d) => d && d.id === iso)) || {};
-
-      // verifica feriado
-      const feriadoMatchIso = todosFeriados.find((f) => f.dateIso === iso);
-      const feriadoMatchDDMM = todosFeriados.find((f) => f.date === ddmm && !f.dateIso);
-      const feriadoMatch = feriadoMatchIso || feriadoMatchDDMM;
-
+      const feriadoMatch = feriadosMap.get(iso) || feriadosMap.get(ddmm);
       const diaLabel = feriadoMatch ? `${capitalize(weekday)} (Feriado)` : capitalize(weekday);
 
-      // garante strings
-      let entradaCell = p.entrada ? String(p.entrada) : "-";
-      let saidaIntCell = p.intervaloSaida ? String(p.intervaloSaida) : "-";
-      let voltaIntCell = p.intervaloVolta ? String(p.intervaloVolta) : "-";
-      let saidaCell = p.saida ? String(p.saida) : "-";
+      let entradaCell = p.entrada || "-";
+      let saidaIntCell = p.intervaloSaida || "-";
+      let voltaIntCell = p.intervaloVolta || "-";
+      let saidaCell = p.saida || "-";
 
       if (p.status && p.status !== "OK") {
-        entradaCell = saidaIntCell = voltaIntCell = saidaCell = String(p.status);
+        entradaCell = saidaIntCell = voltaIntCell = saidaCell = p.status;
       }
 
-      // calcula minutos com segurança
       let minutosDia = 0;
       try {
-        if (p && (p.entrada || p.saida || p.status)) {
-          const val = calcMinutesWorkedForDay(p);
-          minutosDia = typeof val === "number" && !isNaN(val) ? val : 0;
-        }
-      } catch (err) {
-        console.warn("Erro calc minutos para", iso, err);
+        minutosDia = calcMinutesWorkedForDay(p) || 0;
+      } catch {
+        minutosDia = 0;
       }
-
       totalMinutesMonth += minutosDia;
 
       rows.push([
-        dataFormatada,
+        iso.split("-").reverse().join("/"),
         diaLabel,
         entradaCell,
         saidaIntCell,
@@ -758,126 +770,104 @@ const gerarRelatorio = async (monthObj) => {
       ]);
     }
 
-    // debug: o que será enviado ao autotable
-    console.log("gerarRelatorio: rows geradas (total):", rows.length, rows);
-
-    // monta PDF
+    // ===== PDF =====
     const doc = new jsPDF({ unit: "pt", format: "a4" });
+    doc.setFont("helvetica", "normal");
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const marginLeft = 40;
+    const marginRight = 40;
+    const usableWidth = pageWidth - marginLeft - marginRight;
 
+    // Cabeçalho
     doc.setFontSize(16);
-    doc.text("Relatório Mensal de Pontos", 40, 50);
+    doc.text(`Relatório de Ponto - ${capitalize(nomeMes)}`, marginLeft, 40, { maxWidth: usableWidth });
+
     doc.setFontSize(11);
-    doc.text(`Funcionário: ${funcionario.nome || "-"}`, 40, 72);
-    doc.text(`Loja: ${loja}`, 40, 88);
-    doc.text(`Mês de referência: ${capitalize(nomeMes)}`, 40, 104);
+    doc.text(`Funcionário: ${funcionario.nome || funcionarioId}`, marginLeft, 60, { maxWidth: usableWidth });
+    doc.text(`Loja: ${loja}`, marginLeft, 76, { maxWidth: usableWidth });
+    doc.text(`Gerado em: ${new Date().toLocaleDateString("pt-BR")}`, marginLeft, 92, { maxWidth: usableWidth });
 
+    // ===== TABELA =====
     autoTable(doc, {
-  startY: 125,
-  head: [["Data", "Dia", "Entrada", "Saída Int.", "Volta Int.", "Saída"]],
-  body: rows,
-  theme: "grid",
-  headStyles: { fillColor: [41, 128, 185], textColor: 255 },
-  styles: { fontSize: 10, cellPadding: 6, textColor: 0 },
-  margin: { left: 40, right: 40 },
+      startY: 110,
+      head: [["Data", "Dia", "Entrada", "Saída Int.", "Volta Int.", "Saída"]],
+      body: rows,
+      theme: "striped", // <--- ativa zebra
+      margin: { left: marginLeft, right: marginRight },
+      styles: {
+        fontSize: 10,
+        cellPadding: 6,
+        textColor: 0,
+        lineColor: [0, 0, 0],
+        lineWidth: 0.1,
+        overflow: "hidden", // impede quebra
+        valign: "middle",
+      },
+      headStyles: {
+        fillColor: [41, 128, 185],
+        textColor: 255,
+        fontStyle: "bold",
+        halign: "left",
+      },
+      alternateRowStyles: {
+        fillColor: [245, 245, 245], // zebra
+      },
+      columnStyles: {
+        0: { cellWidth: 70, halign: "left" },
+        1: { cellWidth: usableWidth - (70 + 50 * 4), halign: "left" },
+        2: { cellWidth: 50, halign: "center" },
+        3: { cellWidth: 50, halign: "center" },
+        4: { cellWidth: 50, halign: "center" },
+        5: { cellWidth: 50, halign: "center" },
+      },
+    });
 
-  // DESENHA A ZEBRA de forma robusta
-  willDrawCell: function (data) {
-    // Somente para linhas do corpo, e apenas na primeira coluna
-    if (data.section !== "body" || data.column.index !== 0) return;
+    // ===== PÓS-TABELA =====
+    const tableFinalY = doc.lastAutoTable.finalY || 140;
+    let yCursor = tableFinalY + 20;
 
-    try {
-      const rowIndex = Number(data.row.index);
-      if (!Number.isFinite(rowIndex)) return;
-
-      // fallback chain para calcular X (início da tabela)
-      const tableStartX = (data.table && Number.isFinite(data.table.startX))
-        ? data.table.startX
-        : (data.table && data.table.styles && Number.isFinite(data.table.styles.margin?.left))
-          ? data.table.styles.margin.left
-          : (data.table && data.table.margin && Number.isFinite(data.table.margin.left))
-            ? data.table.margin.left
-            : (data.cell && Number.isFinite(data.cell.x))
-              ? data.cell.x
-              : null;
-
-      // tenta obter largura total da tabela por vários caminhos
-      let tableWidth = null;
-      if (data.table && Number.isFinite(data.table.width)) {
-        tableWidth = data.table.width;
-      } else if (Array.isArray(data.row.cells) && data.row.cells.length > 0) {
-        tableWidth = data.row.cells.reduce((acc, c) => {
-          const w = Number(c.width);
-          return acc + (Number.isFinite(w) ? w : 0);
-        }, 0);
-      } else if (data.table && Array.isArray(data.table.columns) && data.table.columns.length > 0) {
-        tableWidth = data.table.columns.reduce((acc, c) => {
-          const w = Number(c.width);
-          return acc + (Number.isFinite(w) ? w : 0);
-        }, 0);
-      }
-
-      // fallback para y/height
-      const y = (data.row && Number.isFinite(data.row.y)) ? data.row.y : (data.cell && Number.isFinite(data.cell.y) ? data.cell.y : null);
-      const h = (data.row && Number.isFinite(data.row.height)) ? data.row.height : (data.cell && Number.isFinite(data.cell.height) ? data.cell.height : null);
-
-      // se qualquer valor essencial for inválido, aborta sem desenhar
-      if (![tableStartX, tableWidth, y, h].every(v => Number.isFinite(v) && v > 0)) {
-        return;
-      }
-
-      // Alternância: pinta linhas pares (ou ímpares) — ajustar aqui se quiser inverter
-      const isEven = rowIndex % 2 === 0;
-
-      // Escolha de cor (ex.: cinza claro) — pode trocar para [230,240,255] se preferir azul
-      const fillColor = isEven ? [245, 245, 245] : [255, 255, 255];
-
-      doc.setFillColor(...fillColor);
-      // "F" = fill sem stroke
-      doc.rect(tableStartX, y, tableWidth, h, "F");
-    } catch (err) {
-      // nunca deixe o PDF falhar por conta da zebra — logue no console para debug
-      // console.warn("Zebra draw skipped (willDrawCell) due to error:", err, data);
-    }
-  },
-});
-
-    // lista de feriados no mês (mostrando data, nome e tipo)
-    const feriadosNoMes = todosFeriados.filter((f) => {
-      if (f.dateIso) {
-        return f.dateIso.startsWith(`${ano}-${String(mesIndex + 1).padStart(2, "0")}`);
-      }
+    // ===== FERIADOS =====
+    const feriadosNoMes = Array.from(feriadosMap.values()).filter((f) => {
+      if (f.dateIso) return f.dateIso.startsWith(`${ano}-${String(mesIndex + 1).padStart(2, "0")}`);
       if (f.date) {
-        const parts = f.date.split("/");
-        if (parts.length >= 2) {
-          const mm = parts[1];
-          return mm === String(mesIndex + 1).padStart(2, "0");
-        }
+        const [d, m] = f.date.split("/");
+        return m === String(mesIndex + 1).padStart(2, "0");
       }
       return false;
     });
 
-    let offset = doc.lastAutoTable ? doc.lastAutoTable.finalY + 20 : 125 + rows.length * 12 + 20;
+    doc.setFontSize(12);
     if (feriadosNoMes.length > 0) {
-      doc.setFontSize(12);
-      doc.text("Feriados no mês:", 40, offset);
-      offset += 16;
+      doc.text("Feriados no mês:", marginLeft, yCursor);
+      yCursor += 14;
       doc.setFontSize(10);
-      feriadosNoMes.forEach((f) => {
-        const dateLabel = f.dateIso ? f.dateIso.split("-").reverse().join("/") : f.date;
-        const typeLabel = f.type ? ` (${f.type})` : "";
-        const label = `${dateLabel} — ${f.name}${typeLabel}`;
-        doc.text(label, 50, offset);
-        offset += 14;
-      });
+
+      for (const f of feriadosNoMes) {
+        if (yCursor > doc.internal.pageSize.getHeight() - 60) {
+          doc.addPage();
+          yCursor = 40;
+        }
+        const dataFmt = f.dateIso ? f.dateIso.split("-").reverse().join("/") : f.date;
+        const tipo = f.type || "Regional";
+        const nomeF = f.name || "(sem nome)";
+        const linha = `- ${dataFmt} — ${nomeF} (${tipo})`;
+        doc.text(linha, marginLeft + 8, yCursor, { maxWidth: usableWidth - 16 });
+        yCursor += 12;
+      }
+    } else {
+      doc.text("Feriados no mês: nenhum registrado.", marginLeft, yCursor);
+      yCursor += 14;
     }
 
-    // total de horas
-    const totalFmt = minutesToHHMM(totalMinutesMonth);
+    // ===== TOTAL =====
+    yCursor += 10;
+    const totalFmt = minutesToHHMM(totalMinutesMonth || 0);
     doc.setFontSize(11);
-    const afterY = offset + 12;
-    doc.text(`Total de horas trabalhadas no mês: ${totalFmt}`, 40, afterY + 18);
+    doc.text(`Total de horas trabalhadas no mês: ${totalFmt}`, marginLeft, yCursor + 6);
 
-    const nomeArquivo = `Relatorio_${capitalize(nomeMes).replace(/\s+/g, "")}_${funcionario.nome ? slugify(funcionario.nome) : funcionarioId}.pdf`;
+    // ===== SALVAR =====
+    const safeNomeMes = capitalize(nomeMes).replace(/\s+/g, "");
+    const nomeArquivo = `Relatorio_${safeNomeMes}_${funcionario.nome ? slugify(funcionario.nome) : funcionarioId}.pdf`;
     doc.save(nomeArquivo);
   } catch (err) {
     console.error("gerarRelatorio: erro:", err);
@@ -1006,13 +996,13 @@ const handleFileUpload = async (e) => {
       </Box>
       <Stack direction="row" alignItems="center" spacing={2} mb={3} justifyContent="center">
         <Button
-          variant="outlined"
-          color="secondary"
-          startIcon={<ArrowBackIcon />}
-          onClick={() => navigate(isAdmin ? `/admin/loja/${lojaId}` : "/painel")}
-        >
-          Voltar
-        </Button>
+  variant="outlined"
+  color="secondary"
+  startIcon={<ArrowBackIcon />}
+  onClick={() => navigate(isAdmin ? `/admin/loja/${lojaId}` : `/loja/${lojaId}/painel`)}
+>
+  Voltar
+</Button>
         <Box display="flex" alignItems="center" gap={2}>
           <img src="/logo.jpg" alt="Logo" style={{ width: 52, height: 52, borderRadius: "50%" }} />
           <Typography variant="h5" sx={{ color: "#fff", fontWeight: "bold" }}>
@@ -1050,7 +1040,7 @@ const handleFileUpload = async (e) => {
           <Typography variant="h6" sx={{ color: "#fff" }}>
             {funcData?.nome}
           </Typography>
-          {isAdmin && (
+          {temPermissao && (
             <Button
   variant="contained"
   color="warning"
@@ -1116,7 +1106,7 @@ const handleFileUpload = async (e) => {
         </Box>
         <Divider sx={{ my: 3, bgcolor: "#333" }} />
         {/* CONFIG UI: Feriados Regionais */}
-        {isAdmin && (
+        {temPermissao && (
           <Paper sx={{ p: 2, mb: 2, bgcolor: "#222", borderRadius: 2 }}>
             <Typography variant="subtitle1" sx={{ color: "#fff", mb: 1 }}>
               Feriados Regionais (configuração)
@@ -1181,7 +1171,7 @@ const handleFileUpload = async (e) => {
           </Typography>
 
           <Stack direction="row" spacing={1} alignItems="center">
-            {isAdmin && (
+            {temPermissao && (
               <IconButton
                 size="small"
                 color="primary"
@@ -1232,12 +1222,12 @@ const handleFileUpload = async (e) => {
               onChange={(e) => handleUploadAtestado(p.id, e.target.files[0])}
             />
           </Button>
-
-          <IconButton color="error" onClick={() => handleExcluirPonto(p.id)}>
-            <DeleteForeverIcon />
-          </IconButton>
-
-          {isAdmin && (
+{temPermissao && (
+  <IconButton color="error" onClick={() => handleExcluirPonto(p.id)}>
+    <DeleteForeverIcon />
+  </IconButton>
+)}
+          {temPermissao && (
             <Button size="small" variant="outlined" onClick={() => clearTimestamp(p.id, "saida")}>
               Limpar Saída
             </Button>
