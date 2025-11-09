@@ -67,6 +67,46 @@ const BRAZIL_TZ = "America/Sao_Paulo";
 // localStorage key for regional holidays config
 const LS_KEY_REGIONAIS = "ponto_feriados_regionais_v1";
 
+// Função para gerar e salvar descriptor a partir da fotoReferencia
+async function gerarEDepositarFaceDescriptor(lojaId, funcionarioId, fotoUrl) {
+  try {
+    console.log("🔍 Gerando descriptor facial para:", funcionarioId);
+    if (!fotoUrl) throw new Error("Sem fotoReferencia disponível.");
+
+    // Garante modelos carregados
+    const MODEL_URL = "/models";
+    await Promise.all([
+      faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+      faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+      faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+    ]);
+
+    const img = await faceapi.fetchImage(fotoUrl);
+    const detection = await faceapi
+      .detectSingleFace(img, new faceapi.SsdMobilenetv1Options())
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+
+    if (!detection || !detection.descriptor) {
+      console.warn("❌ Nenhum rosto detectado na imagem de referência!");
+      return null;
+    }
+
+    const descArray = Array.from(detection.descriptor);
+    await setDoc(
+      doc(db, "lojas", lojaId, "funcionarios", funcionarioId),
+      { faceDescriptor: descArray, updatedAt: new Date().toISOString() },
+      { merge: true }
+    );
+
+    console.log("✅ faceDescriptor salvo para", funcionarioId);
+    return descArray;
+  } catch (err) {
+    console.error("Erro ao gerar/salvar faceDescriptor:", err);
+    return null;
+  }
+}
+
 export default function FuncionarioPerfil() {
   const { lojaId, funcionarioId } = useParams();
   const navigate = useNavigate();
@@ -222,6 +262,15 @@ const carregarFuncionario = async () => {
       const d = funcSnap.data();
       // manter ambos estados sincronizados (se você usa funcData e funcionario)
       setFuncData(d);
+      if (d.fotoReferencia && !d.faceDescriptor) {
+  console.log("FUNC-PERF: faceDescriptor ausente — gerando automaticamente...");
+  gerarEDepositarFaceDescriptor(lojaId, funcionarioId, d.fotoReferencia).then((novoDesc) => {
+    if (novoDesc) {
+      setFuncData((prev) => ({ ...prev, faceDescriptor: novoDesc }));
+    }
+  });
+}
+
       setFuncionario({ id: funcionarioId, ...d });
       setFotoPreview(d.fotoReferencia || "");
       console.log("FUNC-PERF: Dados do funcionário carregados:", { id: funcionarioId, ...d });
@@ -345,9 +394,11 @@ const carregarFuncionario = async () => {
     return;
   }
 
+  let stream = null;
+  let video = null;
+
   try {
-    // 🔄 Garante que os dados do funcionário estejam atualizados do Firestore
-    console.log("FUNC-PERF: recarregando dados do funcionário antes do reconhecimento...");
+    console.log("FUNC-PERF: Recarregando dados do funcionário antes do reconhecimento...");
     const funcionarioRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId);
     const funcionarioSnap = await getDoc(funcionarioRef, { source: "server" }).catch(() =>
       getDoc(funcionarioRef)
@@ -359,165 +410,102 @@ const carregarFuncionario = async () => {
     }
 
     const funcionarioData = funcionarioSnap.data();
-    console.log("FUNC-PERF: Dados do funcionário recarregados:", funcionarioData);
+    console.log("FUNC-PERF: Dados recarregados:", funcionarioData);
 
-    if (!funcionarioData.faceDescriptor || !Array.isArray(funcionarioData.faceDescriptor)) {
-      alert("⚠️ Nenhuma foto de referência cadastrada para este funcionário.");
+    // 🔍 Se faltar descriptor, tenta gerar agora
+    let storedDesc = null;
+    if (funcionarioData.faceDescriptor && Array.isArray(funcionarioData.faceDescriptor)) {
+      storedDesc = new Float32Array(funcionarioData.faceDescriptor);
+    } else if (funcionarioData.fotoReferencia) {
+      console.warn("FUNC-PERF: funcionário sem descriptor — gerando a partir da fotoReferencia...");
+      const novoDesc = await gerarEDepositarFaceDescriptor(
+        lojaId,
+        funcionarioId,
+        funcionarioData.fotoReferencia
+      );
+      if (novoDesc) storedDesc = new Float32Array(novoDesc);
+      else {
+        alert("⚠️ Não foi possível gerar o reconhecimento facial. Tente atualizar a foto.");
+        return;
+      }
+    } else {
+      alert("⚠️ Nenhuma foto cadastrada para este funcionário.");
       return;
     }
 
-    // Atualiza estado local (opcional)
-    setFuncData(funcionarioData);
+    // 🧠 Garante modelos carregados
+    const MODEL_URL = "/models";
+    await Promise.all([
+      faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+      faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+      faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+    ]);
 
-    // Garante modelos carregados
-    if (!faceapi.nets.ssdMobilenetv1.params || !faceapi.nets.faceRecognitionNet.params) {
-      console.warn("FUNC-PERF: modelos faceapi podem não estar prontos. Tentando carregar novamente...");
-      try {
-        const MODEL_URL = "/models";
-        await Promise.all([
-          faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
-          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-        ]);
-        console.log("FUNC-PERF: modelos (re)carregados.");
-      } catch (err) {
-        console.error("FUNC-PERF: não foi possível carregar modelos:", err);
-        alert("Erro: modelos de reconhecimento não estão prontos. Veja console.");
-        return;
-      }
-    }
-
-    let stream = null;
-    let video = null;
-    const storedDesc = arrayToDescriptor(funcionarioData.faceDescriptor);
-
-    console.log("FUNC-PERF: solicitando permissão da câmera...");
+    // 📸 Abre câmera
+    console.log("FUNC-PERF: Solicitando acesso à câmera...");
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-    console.log("FUNC-PERF: permissão concedida, iniciando elemento video...");
-
     video = document.createElement("video");
-    video.autoplay = true;
-    video.playsInline = true;
-    video.muted = true;
-    video.width = 420;
-    video.height = 320;
-    video.style.position = "fixed";
-    video.style.right = "16px";
-    video.style.top = "16px";
-    video.style.zIndex = 9999;
-    video.style.border = "2px solid rgba(255,255,255,0.12)";
-    video.style.borderRadius = "8px";
-    video.style.background = "#000";
-    document.body.appendChild(video);
+    Object.assign(video, {
+      autoplay: true,
+      playsInline: true,
+      muted: true,
+      width: 420,
+      height: 320,
+    });
+    Object.assign(video.style, {
+      position: "fixed",
+      right: "16px",
+      top: "16px",
+      zIndex: 9999,
+      border: "2px solid rgba(255,255,255,0.12)",
+      borderRadius: "8px",
+      background: "#000",
+    });
     video.srcObject = stream;
+    document.body.appendChild(video);
 
     await new Promise((res) => {
-      const onCan = () => {
-        video.removeEventListener("loadeddata", onCan);
-        setTimeout(res, 250);
-      };
-      video.addEventListener("loadeddata", onCan);
-      setTimeout(res, 1500);
+      video.onloadeddata = () => setTimeout(res, 300);
     });
 
-    console.log("FUNC-PERF: vídeo pronto. iniciando loop de detecção por até", attemptsTimeout, "ms");
-
+    console.log("FUNC-PERF: vídeo pronto — iniciando detecção facial...");
     const start = Date.now();
     let matched = false;
 
     while (Date.now() - start < attemptsTimeout && !matched) {
-      // 1️⃣ Tenta detectar direto no <video>
-      let detection = null;
-      try {
-        detection = await faceapi
-          .detectSingleFace(video, new faceapi.SsdMobilenetv1Options())
-          .withFaceLandmarks()
-          .withFaceDescriptor();
-      } catch (err) {
-        console.warn("FUNC-PERF: faceapi.detectSingleFace(video) falhou:", err);
-        detection = null;
-      }
+      const detection = await faceapi
+        .detectSingleFace(video, new faceapi.SsdMobilenetv1Options())
+        .withFaceLandmarks()
+        .withFaceDescriptor();
 
       if (detection && detection.descriptor) {
-        console.log("FUNC-PERF: rosto detectado via video. comparando...");
-        const liveDesc = detection.descriptor;
-        const { match, distance } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
-        console.log(
-          "FUNC-PERF: comparação -> match:",
-          match,
-          "distância:",
-          typeof distance === "number" ? distance.toFixed(3) : distance
-        );
+        const distance = faceapi.euclideanDistance(storedDesc, detection.descriptor);
+        const match = distance < 0.45;
+        console.log(`🧩 Distância: ${distance.toFixed(3)} — match: ${match}`);
 
         if (match) {
+          console.log("✅ Rosto reconhecido! Registrando ponto...");
           matched = true;
-          console.log("FUNC-PERF: ✅ Reconhecimento via video OK — registrando ponto...");
           await onVerifyPunchSuccess();
           break;
-        } else {
-          console.log("FUNC-PERF: rosto detectado via video, mas não confere. tentando próxima iteração...");
-        }
-      } else {
-        // 2️⃣ Fallback via canvas/dataURL
-        try {
-          const canvas = document.createElement("canvas");
-          canvas.width = video.videoWidth || 420;
-          canvas.height = video.videoHeight || 320;
-          const ctx = canvas.getContext("2d");
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const dataUrl = canvas.toDataURL("image/jpeg");
-          console.log("FUNC-PERF: nenhum detection direto — executando fallback via canvas -> dataURL");
-          const imgEl = await createImageElementFromDataUrl(dataUrl);
-          if (imgEl) {
-            const liveDesc = await getFaceDescriptorFromMedia(imgEl);
-            if (liveDesc) {
-              console.log("FUNC-PERF: descriptor obtido via fallback. comparando...");
-              const { match, distance } = compareDescriptors(storedDesc, liveDesc, THRESHOLD);
-              console.log(
-                "FUNC-PERF: comparação fallback -> match:",
-                match,
-                "distância:",
-                typeof distance === "number" ? distance.toFixed(3) : distance
-              );
-              if (match) {
-                matched = true;
-                console.log("FUNC-PERF: ✅ Reconhecimento via fallback OK — registrando ponto...");
-                await onVerifyPunchSuccess();
-                break;
-              } else {
-                console.log("FUNC-PERF: fallback detectou rosto, mas não confere.");
-              }
-            } else {
-              console.log("FUNC-PERF: fallback não detectou rosto no frame.");
-            }
-          } else {
-            console.log("FUNC-PERF: createImageElementFromDataUrl retornou null no fallback.");
-          }
-        } catch (err) {
-          console.warn("FUNC-PERF: erro no fallback (canvas/dataUrl):", err);
         }
       }
-
       await new Promise((r) => setTimeout(r, intervalMs));
     }
 
     if (!matched) {
-      console.log("FUNC-PERF: não houve match após tentativas.");
-      alert("😕 Não foi possível reconhecer o rosto. Tente novamente com mais luz e olhando para a câmera.");
+      alert("😕 Não foi possível reconhecer o rosto. Tente novamente com mais luz.");
     }
   } catch (err) {
-    console.error("FUNC-PERF: Erro durante reconhecimento ao vivo:", err);
-    alert("Erro ao acessar a câmera ou durante o reconhecimento. Veja o console para detalhes.");
+    console.error("❌ Erro durante reconhecimento facial:", err);
+    alert("Erro durante o reconhecimento facial. Veja console para detalhes.");
   } finally {
-    // 🧹 Cleanup
+    // 🔚 Limpeza segura
     try {
       if (stream) stream.getTracks().forEach((t) => t.stop());
-      const vid = document.querySelector("video");
-      if (vid && vid.parentNode) vid.parentNode.removeChild(vid);
-      console.log("FUNC-PERF: cleanup concluído (stream + video removidos).");
-    } catch (err) {
-      console.warn("FUNC-PERF: erro no cleanup:", err);
-    }
+      if (video && video.parentNode) video.parentNode.removeChild(video);
+    } catch {}
+    console.log("FUNC-PERF: cleanup concluído (stream e vídeo fechados).");
   }
 };
   // botão chama esta função
