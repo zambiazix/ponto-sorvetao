@@ -60,6 +60,7 @@ import {
 // PDF libs
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import ConsentDialogs from "../components/ConsentDialogs"; // ajuste o path conforme sua estrutura
 
 const ADMIN_UID = "mD3ie8YGmgaup2VVDpKuMBltXgp2";
 const THRESHOLD = 0.55;
@@ -123,6 +124,7 @@ export default function FuncionarioPerfil() {
   const [temPermissao, setTemPermissao] = useState(false);
   const [carregando, setCarregando] = useState(true);
   const [uploadingAtestado, setUploadingAtestado] = useState(false);
+  const [reconhecimentoEmAndamento, setReconhecimentoEmAndamento] = useState(false);
   // UI state for regional holidays text area
   const [regionalHolidaysText, setRegionalHolidaysText] = useState("");
   const [regionalHolidaysParsed, setRegionalHolidaysParsed] = useState([]);
@@ -201,6 +203,20 @@ useEffect(() => {
       console.warn("FUNC-PERF: Falha geral no carregamento:", err);
     }
   };
+// 🚀 Pré-carrega permissão da câmera ao abrir o perfil do funcionário
+useEffect(() => {
+  navigator.mediaDevices
+    .getUserMedia({ video: true })
+    .then((stream) => {
+      // Fecha o stream imediatamente após o preload
+      stream.getTracks().forEach((t) => t.stop());
+      console.log("📸 Permissão de câmera pré-carregada no perfil!");
+    })
+    .catch(() => {
+      console.warn("⚠️ Usuário negou a permissão de câmera antecipadamente.");
+    });
+}, []);
+
 
   carregarTudo();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -389,15 +405,21 @@ const carregarFuncionario = async () => {
   };
   // --- Função que tenta detectar diretamente no <video> (como Painel), com fallback para canvas/dataURL ---
   const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, intervalMs = 800 } = {}) => {
-  if (isAdmin) {
-    await onVerifyPunchSuccess();
+  if (reconhecimentoEmAndamento) {
+    console.warn("⏳ Reconhecimento já em andamento — clique ignorado.");
     return;
   }
-
-  let stream = null;
-  let video = null;
+  setReconhecimentoEmAndamento(true);
 
   try {
+    if (isAdmin) {
+      await onVerifyPunchSuccess();
+      return;
+    }
+
+    let stream = null;
+    let video = null;
+
     console.log("FUNC-PERF: Recarregando dados do funcionário antes do reconhecimento...");
     const funcionarioRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId);
     const funcionarioSnap = await getDoc(funcionarioRef, { source: "server" }).catch(() =>
@@ -505,6 +527,7 @@ const carregarFuncionario = async () => {
       if (stream) stream.getTracks().forEach((t) => t.stop());
       if (video && video.parentNode) video.parentNode.removeChild(video);
     } catch {}
+    setReconhecimentoEmAndamento(false);
     console.log("FUNC-PERF: cleanup concluído (stream e vídeo fechados).");
   }
 };
@@ -1007,6 +1030,7 @@ const handleFileUpload = async (e) => {
   const currentMonthKey = `${nowSP.getFullYear()}-${String(nowSP.getMonth() + 1).padStart(2, "0")}`;
 
   return (
+    
     <Container sx={{ bgcolor: "#121212", minHeight: "100vh", py: 4, color: "white" }}>
       <Box sx={{ position: "fixed", top: 8, right: 16, color: "rgba(255,255,255,0.2)", fontSize: 12 }}>
         Versão 1.0 - Criado por Zambiazi

@@ -11,6 +11,7 @@ import {
   getDoc,
   updateDoc,
   deleteDoc,
+  setDoc,
 } from "firebase/firestore";
 import {
   Container,
@@ -34,6 +35,7 @@ import CalendarMonthIcon from "@mui/icons-material/CalendarMonth";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import * as faceapi from "@vladmandic/face-api";
+import ConsentDialogs from "../components/ConsentDialogs"; // ✅ IMPORTAÇÃO ADICIONADA
 
 const ADMIN_UID = "mD3ie8YGmgaup2VVDpKuMBltXgp2";
 
@@ -48,6 +50,15 @@ export default function Painel() {
   const [nomeLoja, setNomeLoja] = useState("");
   const [lojaId, setLojaId] = useState(lojaParam || "");
   const [modelosCarregados, setModelosCarregados] = useState(false);
+
+  // 🔒 LGPD - novos estados e controles
+  const [currentUser, setCurrentUser] = useState(null);
+  const [consentDialogOpen, setConsentDialogOpen] = useState(false);
+  const [consentPendingFuncId, setConsentPendingFuncId] = useState(null);
+  const [consentPendingNome, setConsentPendingNome] = useState(null);
+  const [reconhecimentoEmAndamento, setReconhecimentoEmAndamento] = useState(false);
+
+  const DOCUMENT_VERSION = "1.0";
 
   // ✅ Carrega os modelos uma única vez
   useEffect(() => {
@@ -67,10 +78,19 @@ export default function Painel() {
     };
     loadModels();
   }, []);
-
+// 🚀 Pré-carrega permissão da câmera ao abrir o painel
+useEffect(() => {
+  navigator.mediaDevices.getUserMedia({ video: true })
+    .then((stream) => {
+      stream.getTracks().forEach((t) => t.stop());
+      console.log("📸 Permissão de câmera pré-carregada!");
+    })
+    .catch(() => console.warn("⚠️ Usuário negou permissão de câmera antecipada."));
+}, []);
   // 👤 Verifica usuário logado (admin ou gerente)
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user || null);
       if (user) {
         if (user.uid === ADMIN_UID) {
           setIsAdmin(true);
@@ -179,16 +199,55 @@ export default function Painel() {
     }
   };
 
-  // 🧠 Reconhecimento facial
+  // 🔍 Checa consentimento no Firestore
+  const checkConsentForUser = async (funcId) => {
+    try {
+      const funcRef = doc(db, "lojas", lojaId, "funcionarios", funcId);
+      const snap = await getDoc(funcRef);
+      if (!snap.exists()) return { ok: false };
+      const data = snap.data();
+      const ok = !!data.consentimentoFacial && !!data.politicaPrivacidadeAceita;
+      return { ok, data };
+    } catch (err) {
+      console.error("Erro checkConsentForUser:", err);
+      return { ok: false };
+    }
+  };
+
+  // 🧠 Reconhecimento facial — AGORA COM VERIFICAÇÃO DE CONSENTIMENTO
   const handleReconhecimentoFacial = async (funcId, nomeFuncionario) => {
-    const user = auth.currentUser;
+  if (reconhecimentoEmAndamento) return; // ⚠️ Bloqueia cliques duplos
+  setReconhecimentoEmAndamento(true);
+
+  try {
+    const user = currentUser || auth.currentUser;
     if (!user || !lojaId) return;
 
+    // admin e gerente continuam acesso direto
     if (user.uid === ADMIN_UID || isGerente) {
       navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
       return;
     }
 
+    // funcionário comum acessando o próprio perfil
+    if (user.uid === funcId) {
+      const consent = await checkConsentForUser(funcId);
+      if (!consent.ok) {
+        console.log("📋 Exibindo termos de consentimento...");
+        setConsentPendingFuncId(funcId);
+        setConsentPendingNome(nomeFuncionario);
+        setConsentDialogOpen(true);
+        return;
+      }
+    }
+
+    await proceedWithFacialRecognition(funcId, nomeFuncionario);
+  } finally {
+    setReconhecimentoEmAndamento(false);
+  }
+};
+  // 🚀 Fluxo do reconhecimento facial isolado
+  const proceedWithFacialRecognition = async (funcId, nomeFuncionario) => {
     if (!modelosCarregados) {
       alert("⚙️ Aguarde o carregamento dos modelos...");
       return;
@@ -270,6 +329,37 @@ export default function Painel() {
   // 🧱 UI
   return (
     <Container sx={{ bgcolor: "#121212", minHeight: "100vh", py: 4, color: "white" }}>
+      {/* 💬 Diálogo de consentimento facial */}
+      <ConsentDialogs
+        open={consentDialogOpen}
+        lojaId={lojaId}
+        funcionarioId={consentPendingFuncId}
+        isAdmin={isAdmin}
+        isGerente={isGerente}
+        onAccepted={async () => {
+          await setDoc(
+            doc(db, "lojas", lojaId, "funcionarios", consentPendingFuncId),
+            {
+              consentimentoFacial: true,
+              consentimentoAssinadoEm: new Date().toISOString(),
+              politicaPrivacidadeAceita: true,
+              politicaAssinadaEm: new Date().toISOString(),
+              versaoDocumento: DOCUMENT_VERSION,
+            },
+            { merge: true }
+          );
+          setConsentDialogOpen(false);
+          await proceedWithFacialRecognition(consentPendingFuncId, consentPendingNome);
+          setConsentPendingFuncId(null);
+          setConsentPendingNome(null);
+        }}
+        onClose={() => {
+          setConsentDialogOpen(false);
+          setConsentPendingFuncId(null);
+          setConsentPendingNome(null);
+        }}
+      />
+
       <Box
         sx={{
           position: "fixed",
@@ -302,30 +392,31 @@ export default function Painel() {
 
       {/* Adicionar Funcionário */}
       {(isAdmin || isGerente) && (
-  <Paper
-    sx={{ p: 3, mb: 4, bgcolor: "#1e1e1e", color: "white", borderRadius: 3 }}
-  >
-    <Box component="form" onSubmit={adicionarFuncionario} display="flex" gap={2}>
-      <TextField
-        label="Nome do funcionário"
-        value={novoNome}
-        onChange={(e) => setNovoNome(e.target.value)}
-        fullWidth
-        variant="filled"
-        InputProps={{ style: { backgroundColor: "#2a2a2a", color: "white" } }}
-        InputLabelProps={{ style: { color: "#bbb" } }}
-      />
-      <Button
-        variant="contained"
-        color="primary"
-        type="submit"
-        startIcon={<AddIcon />}
-      >
-        Adicionar
-      </Button>
-    </Box>
-  </Paper>
-)}
+        <Paper
+          sx={{ p: 3, mb: 4, bgcolor: "#1e1e1e", color: "white", borderRadius: 3 }}
+        >
+          <Box component="form" onSubmit={adicionarFuncionario} display="flex" gap={2}>
+            <TextField
+              label="Nome do funcionário"
+              value={novoNome}
+              onChange={(e) => setNovoNome(e.target.value)}
+              fullWidth
+              variant="filled"
+              InputProps={{ style: { backgroundColor: "#2a2a2a", color: "white" } }}
+              InputLabelProps={{ style: { color: "#bbb" } }}
+            />
+            <Button
+              variant="contained"
+              color="primary"
+              type="submit"
+              startIcon={<AddIcon />}
+            >
+              Adicionar
+            </Button>
+          </Box>
+        </Paper>
+      )}
+
       {/* Lista de Funcionários */}
       <Paper sx={{ p: 2, bgcolor: "#1e1e1e", color: "white", borderRadius: 3 }}>
         {funcionarios.length === 0 ? (

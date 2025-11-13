@@ -51,7 +51,6 @@ admin.initializeApp({
 const db = admin.firestore();
 const auth = admin.auth();
 const PORT = process.env.PORT || 3001;
-
 // ===================================================================
 // 🕓 Função: aplica "FOLGA" automaticamente se não houver ponto no dia
 // ===================================================================
@@ -59,6 +58,8 @@ async function aplicarFolgaAutomatica() {
   console.log("🕓 Iniciando verificação de folgas automáticas...");
 
   const hoje = dayjs().tz(tz).format("YYYY-MM-DD");
+  const agora = dayjs().tz(tz).format("HH:mm:ss");
+  console.log(`📅 Data atual: ${hoje} — Hora: ${agora}`);
 
   try {
     const lojasSnap = await db.collection("lojas").get();
@@ -83,23 +84,27 @@ async function aplicarFolgaAutomatica() {
 
         const pontoSnap = await pontoRef.get();
 
-        if (!pontoSnap.exists) {
-          await pontoRef.set({
-            data: hoje,
-            status: "FOLGA",
-            criadoEm: admin.firestore.FieldValue.serverTimestamp(),
-          });
-          console.log(`✅ Folga atribuída para funcionário ${funcId} (${lojaId})`);
+        // ⚙️ Se o ponto não existir ou estiver vazio, aplica FOLGA
+        if (!pontoSnap.exists() || !pontoSnap.data()?.status) {
+          await pontoRef.set(
+            {
+              data: hoje,
+              status: "FOLGA",
+              criadoAutomaticamente: true,
+              criadoEm: admin.firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+          console.log(`✅ Folga atribuída automaticamente a ${funcId} (loja: ${lojaId})`);
         }
       }
     }
 
-    console.log("✅ Verificação de folgas concluída!");
+    console.log("✅ Verificação de folgas automáticas concluída!");
   } catch (err) {
-    console.error("❌ Erro ao aplicar folgas:", err);
+    console.error("❌ Erro ao aplicar folgas automáticas:", err);
   }
 }
-
 // ===================================================
 // 🧩 Rota manual para testar folgas (GET /folgas)
 // ===================================================
@@ -112,19 +117,17 @@ app.get("/folgas", async (req, res) => {
     res.status(500).send("Erro ao aplicar folgas.");
   }
 });
-
 // ===================================================
 // 🕒 Agendamento diário às 16:00 (horário de Brasília)
 // ===================================================
 cron.schedule(
-  "0 16 * * *",
+  "0 16 * * *", // 16h todos os dias
   async () => {
-    console.log("⏰ Rodando tarefa agendada de folgas automáticas (16h)...");
+    console.log("⏰ Rodando tarefa de folgas automáticas (16h Brasília)...");
     await aplicarFolgaAutomatica();
   },
-  { timezone: tz }
+  { timezone: "America/Sao_Paulo" } // força o fuso horário correto
 );
-
 // ===================================================
 // 🗑️ Rota para deletar loja + usuário Firebase
 // ===================================================
