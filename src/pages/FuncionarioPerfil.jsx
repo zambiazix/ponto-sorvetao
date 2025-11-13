@@ -59,7 +59,7 @@ import {
 } from "../utils/faceRecognition";
 // PDF libs
 import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
+import "jspdf-autotable";
 import ConsentDialogs from "../components/ConsentDialogs"; // ajuste o path conforme sua estrutura
 
 const ADMIN_UID = "mD3ie8YGmgaup2VVDpKuMBltXgp2";
@@ -168,6 +168,7 @@ export default function FuncionarioPerfil() {
 
   return () => unsub();
 }, []);
+
 // Carrega modelos e dados iniciais
 useEffect(() => {
   const carregarTudo = async () => {
@@ -203,6 +204,10 @@ useEffect(() => {
       console.warn("FUNC-PERF: Falha geral no carregamento:", err);
     }
   };
+
+  carregarTudo();
+}, []);
+
 // 🚀 Pré-carrega permissão da câmera ao abrir o perfil do funcionário
 useEffect(() => {
   navigator.mediaDevices
@@ -216,11 +221,6 @@ useEffect(() => {
       console.warn("⚠️ Usuário negou a permissão de câmera antecipadamente.");
     });
 }, []);
-
-
-  carregarTudo();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [lojaId, funcionarioId]);
 
   const loadRegionaisFromStorage = () => {
     try {
@@ -404,68 +404,32 @@ const carregarFuncionario = async () => {
     }
   };
   // --- Função que tenta detectar diretamente no <video> (como Painel), com fallback para canvas/dataURL ---
-  const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, intervalMs = 800 } = {}) => {
+  // 🚀 Pré-carregamento invisível da câmera e bloqueio de duplo clique
+const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, intervalMs = 800 } = {}) => {
   if (reconhecimentoEmAndamento) {
     console.warn("⏳ Reconhecimento já em andamento — clique ignorado.");
     return;
   }
+
   setReconhecimentoEmAndamento(true);
+  let stream = null;
+  let video = null;
 
   try {
-    if (isAdmin) {
-      await onVerifyPunchSuccess();
-      return;
+    // 🔥 Pré-aquecimento invisível da câmera
+    console.log("FUNC-PERF: pré-aquecendo câmera...");
+    try {
+      const warmupStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      warmupStream.getTracks().forEach((t) => t.stop());
+      console.log("FUNC-PERF: câmera pré-aquecida com sucesso.");
+    } catch (preErr) {
+      console.warn("⚠️ FUNC-PERF: falha no pré-aquecimento da câmera (sem dispositivo?)", preErr);
     }
 
-    let stream = null;
-    let video = null;
-
-    console.log("FUNC-PERF: Recarregando dados do funcionário antes do reconhecimento...");
-    const funcionarioRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId);
-    const funcionarioSnap = await getDoc(funcionarioRef, { source: "server" }).catch(() =>
-      getDoc(funcionarioRef)
-    );
-
-    if (!funcionarioSnap.exists()) {
-      alert("Erro: funcionário não encontrado no banco de dados.");
-      return;
-    }
-
-    const funcionarioData = funcionarioSnap.data();
-    console.log("FUNC-PERF: Dados recarregados:", funcionarioData);
-
-    // 🔍 Se faltar descriptor, tenta gerar agora
-    let storedDesc = null;
-    if (funcionarioData.faceDescriptor && Array.isArray(funcionarioData.faceDescriptor)) {
-      storedDesc = new Float32Array(funcionarioData.faceDescriptor);
-    } else if (funcionarioData.fotoReferencia) {
-      console.warn("FUNC-PERF: funcionário sem descriptor — gerando a partir da fotoReferencia...");
-      const novoDesc = await gerarEDepositarFaceDescriptor(
-        lojaId,
-        funcionarioId,
-        funcionarioData.fotoReferencia
-      );
-      if (novoDesc) storedDesc = new Float32Array(novoDesc);
-      else {
-        alert("⚠️ Não foi possível gerar o reconhecimento facial. Tente atualizar a foto.");
-        return;
-      }
-    } else {
-      alert("⚠️ Nenhuma foto cadastrada para este funcionário.");
-      return;
-    }
-
-    // 🧠 Garante modelos carregados
-    const MODEL_URL = "/models";
-    await Promise.all([
-      faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
-      faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-      faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-    ]);
-
-    // 📸 Abre câmera
-    console.log("FUNC-PERF: Solicitando acesso à câmera...");
+    console.log("FUNC-PERF: solicitando acesso à câmera real...");
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+
+    // Cria elemento de vídeo invisível
     video = document.createElement("video");
     Object.assign(video, {
       autoplay: true,
@@ -478,11 +442,11 @@ const carregarFuncionario = async () => {
       position: "fixed",
       right: "16px",
       top: "16px",
-      zIndex: 9999,
-      border: "2px solid rgba(255,255,255,0.12)",
-      borderRadius: "8px",
-      background: "#000",
+      zIndex: -9999, // completamente invisível
+      opacity: 0,
+      pointerEvents: "none",
     });
+
     video.srcObject = stream;
     document.body.appendChild(video);
 
@@ -1141,9 +1105,16 @@ const handleFileUpload = async (e) => {
   </Paper>
 )}
         <Box textAlign="center" mt={2}>
-          <Button variant="contained" color="success" startIcon={<CameraAltIcon />} onClick={requestPunchWithFace} fullWidth>
-            Bater Ponto
-          </Button>
+          <Button
+  variant="contained"
+  color="success"
+  startIcon={<CameraAltIcon />}
+  onClick={requestPunchWithFace}
+  fullWidth
+  disabled={reconhecimentoEmAndamento} // impede duplo clique
+>
+  {reconhecimentoEmAndamento ? "Reconhecendo..." : "Bater Ponto"}
+</Button>
         </Box>
         <Divider sx={{ my: 3, bgcolor: "#333" }} />
         {/* CONFIG UI: Feriados Regionais */}

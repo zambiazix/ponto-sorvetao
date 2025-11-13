@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { signOut, onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "../services/firebase";
 import { useNavigate, useParams } from "react-router-dom";
@@ -35,7 +35,7 @@ import CalendarMonthIcon from "@mui/icons-material/CalendarMonth";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import * as faceapi from "@vladmandic/face-api";
-import ConsentDialogs from "../components/ConsentDialogs"; // ✅ IMPORTAÇÃO ADICIONADA
+import ConsentDialogs from "../components/ConsentDialogs";
 
 const ADMIN_UID = "mD3ie8YGmgaup2VVDpKuMBltXgp2";
 
@@ -51,16 +51,18 @@ export default function Painel() {
   const [lojaId, setLojaId] = useState(lojaParam || "");
   const [modelosCarregados, setModelosCarregados] = useState(false);
 
-  // 🔒 LGPD - novos estados e controles
+  // LGPD
   const [currentUser, setCurrentUser] = useState(null);
   const [consentDialogOpen, setConsentDialogOpen] = useState(false);
   const [consentPendingFuncId, setConsentPendingFuncId] = useState(null);
   const [consentPendingNome, setConsentPendingNome] = useState(null);
   const [reconhecimentoEmAndamento, setReconhecimentoEmAndamento] = useState(false);
+  const [botaoBloqueado, setBotaoBloqueado] = useState(false);
 
+  const cameraStreamRef = useRef(null);
   const DOCUMENT_VERSION = "1.0";
 
-  // ✅ Carrega os modelos uma única vez
+  // ✅ Carrega modelos FaceAPI
   useEffect(() => {
     const loadModels = async () => {
       try {
@@ -78,16 +80,32 @@ export default function Painel() {
     };
     loadModels();
   }, []);
-// 🚀 Pré-carrega permissão da câmera ao abrir o painel
-useEffect(() => {
-  navigator.mediaDevices.getUserMedia({ video: true })
-    .then((stream) => {
-      stream.getTracks().forEach((t) => t.stop());
-      console.log("📸 Permissão de câmera pré-carregada!");
-    })
-    .catch(() => console.warn("⚠️ Usuário negou permissão de câmera antecipada."));
-}, []);
-  // 👤 Verifica usuário logado (admin ou gerente)
+
+  // 🚀 Pré-aquecimento invisível da câmera (mantém stream ativo, melhora tempo de abertura)
+  useEffect(() => {
+    let streamAtivo = null;
+    const preAquecerCamera = async () => {
+      try {
+        streamAtivo = await navigator.mediaDevices.getUserMedia({ video: true });
+        cameraStreamRef.current = streamAtivo;
+        console.log("📸 Câmera pré-aquecida e pronta!");
+      } catch (err) {
+        console.warn("⚠️ Usuário negou acesso à câmera antecipado:", err);
+      }
+    };
+    preAquecerCamera();
+
+    // 🔒 encerra stream ao sair
+    return () => {
+      if (cameraStreamRef.current) {
+        cameraStreamRef.current.getTracks().forEach((t) => t.stop());
+        cameraStreamRef.current = null;
+        console.log("🔴 Câmera pré-aquecida encerrada.");
+      }
+    };
+  }, []);
+
+  // 👤 Verifica usuário logado
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user || null);
@@ -101,7 +119,6 @@ useEffect(() => {
 
         const gerenteRef = doc(db, "gerentes", user.uid);
         const gerenteSnap = await getDoc(gerenteRef);
-
         if (gerenteSnap.exists()) {
           const lojaGerente = gerenteSnap.data().lojaId;
           if (lojaGerente) {
@@ -110,8 +127,6 @@ useEffect(() => {
             setLojaId(lojaGerente);
             setCarregando(false);
             return;
-          } else {
-            console.warn("⚠️ Gerente sem loja vinculada!");
           }
         }
         setCarregando(false);
@@ -127,7 +142,6 @@ useEffect(() => {
     navigate("/");
   };
 
-  // 📦 Carregar funcionários
   const carregarFuncionarios = async (idLoja) => {
     try {
       const q = query(collection(db, "lojas", idLoja, "funcionarios"));
@@ -158,7 +172,6 @@ useEffect(() => {
     }
   }, [lojaId]);
 
-  // ➕ Adicionar funcionário
   const adicionarFuncionario = async (e) => {
     e.preventDefault();
     if (!novoNome.trim() || !lojaId) return;
@@ -167,7 +180,6 @@ useEffect(() => {
     carregarFuncionarios(lojaId);
   };
 
-  // ✏️ Editar funcionário
   const editarFuncionario = async (func) => {
     if (!isAdmin && !isGerente) return alert("Somente admin ou gerente podem editar.");
     const novoNome = prompt("Digite o novo nome do funcionário:", func.nome);
@@ -183,7 +195,6 @@ useEffect(() => {
     }
   };
 
-  // 🗑️ Excluir funcionário
   const excluirFuncionario = async (func) => {
     if (!isAdmin && !isGerente) return alert("Somente admin ou gerente podem excluir.");
     const confirmar = window.confirm(`Tem certeza que deseja excluir ${func.nome}?`);
@@ -199,7 +210,6 @@ useEffect(() => {
     }
   };
 
-  // 🔍 Checa consentimento no Firestore
   const checkConsentForUser = async (funcId) => {
     try {
       const funcRef = doc(db, "lojas", lojaId, "funcionarios", funcId);
@@ -214,39 +224,38 @@ useEffect(() => {
     }
   };
 
-  // 🧠 Reconhecimento facial — AGORA COM VERIFICAÇÃO DE CONSENTIMENTO
   const handleReconhecimentoFacial = async (funcId, nomeFuncionario) => {
-  if (reconhecimentoEmAndamento) return; // ⚠️ Bloqueia cliques duplos
-  setReconhecimentoEmAndamento(true);
+    if (reconhecimentoEmAndamento || botaoBloqueado) return; // bloqueia duplo clique
+    setReconhecimentoEmAndamento(true);
+    setBotaoBloqueado(true);
 
-  try {
-    const user = currentUser || auth.currentUser;
-    if (!user || !lojaId) return;
+    try {
+      const user = currentUser || auth.currentUser;
+      if (!user || !lojaId) return;
 
-    // admin e gerente continuam acesso direto
-    if (user.uid === ADMIN_UID || isGerente) {
-      navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
-      return;
-    }
-
-    // funcionário comum acessando o próprio perfil
-    if (user.uid === funcId) {
-      const consent = await checkConsentForUser(funcId);
-      if (!consent.ok) {
-        console.log("📋 Exibindo termos de consentimento...");
-        setConsentPendingFuncId(funcId);
-        setConsentPendingNome(nomeFuncionario);
-        setConsentDialogOpen(true);
+      if (user.uid === ADMIN_UID || isGerente) {
+        navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
         return;
       }
-    }
 
-    await proceedWithFacialRecognition(funcId, nomeFuncionario);
-  } finally {
-    setReconhecimentoEmAndamento(false);
-  }
-};
-  // 🚀 Fluxo do reconhecimento facial isolado
+      if (user.uid === funcId) {
+        const consent = await checkConsentForUser(funcId);
+        if (!consent.ok) {
+          console.log("📋 Exibindo termos de consentimento...");
+          setConsentPendingFuncId(funcId);
+          setConsentPendingNome(nomeFuncionario);
+          setConsentDialogOpen(true);
+          return;
+        }
+      }
+
+      await proceedWithFacialRecognition(funcId, nomeFuncionario);
+    } finally {
+      setReconhecimentoEmAndamento(false);
+      setTimeout(() => setBotaoBloqueado(false), 1500);
+    }
+  };
+
   const proceedWithFacialRecognition = async (funcId, nomeFuncionario) => {
     if (!modelosCarregados) {
       alert("⚙️ Aguarde o carregamento dos modelos...");
@@ -286,11 +295,14 @@ useEffect(() => {
       video.height = 300;
       document.body.appendChild(video);
 
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      // Usa stream pré-aquecido se disponível
+      const stream = cameraStreamRef.current
+        ? cameraStreamRef.current
+        : await navigator.mediaDevices.getUserMedia({ video: true });
       video.srcObject = stream;
 
       alert("📸 Olhe para a câmera por alguns segundos...");
-      await new Promise((res) => setTimeout(res, 4000));
+      await new Promise((res) => setTimeout(res, 3500));
 
       const detection = await faceapi
         .detectSingleFace(video, new faceapi.SsdMobilenetv1Options())
@@ -299,6 +311,7 @@ useEffect(() => {
 
       stream.getTracks().forEach((t) => t.stop());
       video.remove();
+      cameraStreamRef.current = null;
 
       if (!detection) return alert("❌ Nenhum rosto detectado.");
 
@@ -315,7 +328,6 @@ useEffect(() => {
     }
   };
 
-  // 🕓 Tela de carregamento
   if (carregando) {
     return (
       <Container sx={{ bgcolor: "#121212", minHeight: "100vh", color: "white" }}>
@@ -326,10 +338,8 @@ useEffect(() => {
     );
   }
 
-  // 🧱 UI
   return (
     <Container sx={{ bgcolor: "#121212", minHeight: "100vh", py: 4, color: "white" }}>
-      {/* 💬 Diálogo de consentimento facial */}
       <ConsentDialogs
         open={consentDialogOpen}
         lojaId={lojaId}
@@ -390,11 +400,8 @@ useEffect(() => {
         </Typography>
       </Box>
 
-      {/* Adicionar Funcionário */}
       {(isAdmin || isGerente) && (
-        <Paper
-          sx={{ p: 3, mb: 4, bgcolor: "#1e1e1e", color: "white", borderRadius: 3 }}
-        >
+        <Paper sx={{ p: 3, mb: 4, bgcolor: "#1e1e1e", color: "white", borderRadius: 3 }}>
           <Box component="form" onSubmit={adicionarFuncionario} display="flex" gap={2}>
             <TextField
               label="Nome do funcionário"
@@ -405,19 +412,13 @@ useEffect(() => {
               InputProps={{ style: { backgroundColor: "#2a2a2a", color: "white" } }}
               InputLabelProps={{ style: { color: "#bbb" } }}
             />
-            <Button
-              variant="contained"
-              color="primary"
-              type="submit"
-              startIcon={<AddIcon />}
-            >
+            <Button variant="contained" color="primary" type="submit" startIcon={<AddIcon />}>
               Adicionar
             </Button>
           </Box>
         </Paper>
       )}
 
-      {/* Lista de Funcionários */}
       <Paper sx={{ p: 2, bgcolor: "#1e1e1e", color: "white", borderRadius: 3 }}>
         {funcionarios.length === 0 ? (
           <Typography color="gray" align="center">
@@ -436,8 +437,9 @@ useEffect(() => {
                         size="small"
                         onClick={() => handleReconhecimentoFacial(func.id, func.nome)}
                         startIcon={<PersonIcon />}
+                        disabled={reconhecimentoEmAndamento || botaoBloqueado}
                       >
-                        Ver Perfil
+                        {botaoBloqueado ? "Aguarde..." : "Ver Perfil"}
                       </Button>
                       {(isAdmin || isGerente) && (
                         <>
@@ -461,7 +463,6 @@ useEffect(() => {
         )}
       </Paper>
 
-      {/* Rodapé */}
       <Stack direction="row" spacing={2} justifyContent="center" mt={4}>
         {(isAdmin || isGerente) && (
           <Button
