@@ -403,8 +403,13 @@ const carregarFuncionario = async () => {
       alert("Erro ao registrar ponto.");
     }
   };
-  // --- Função que tenta detectar diretamente no <video> (como Painel), com fallback para canvas/dataURL ---
-  // 🚀 Pré-carregamento invisível da câmera e bloqueio de duplo clique
+// Descriptor salvo do funcionário (se houver)
+// Descriptor salvo do funcionário (se houver)
+const storedDesc = funcData?.faceDescriptor
+  ? arrayToDescriptor(funcData.faceDescriptor)
+  : null;
+
+// 🚀 Pré-carregamento invisível da câmera e bloqueio de duplo clique
 const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, intervalMs = 800 } = {}) => {
   if (reconhecimentoEmAndamento) {
     console.warn("⏳ Reconhecimento já em andamento — clique ignorado.");
@@ -426,10 +431,17 @@ const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, interval
       console.warn("⚠️ FUNC-PERF: falha no pré-aquecimento da câmera (sem dispositivo?)", preErr);
     }
 
+    // ⚠️ CHECK DE DESCRIPTOR — OBRIGATÓRIO AQUI!
+    if (!storedDesc) {
+      alert("⚠️ Nenhuma foto cadastrada para reconhecimento facial.");
+      setReconhecimentoEmAndamento(false);
+      return;
+    }
+
     console.log("FUNC-PERF: solicitando acesso à câmera real...");
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
 
-    // Cria elemento de vídeo invisível
+    // Cria vídeo invisível
     video = document.createElement("video");
     Object.assign(video, {
       autoplay: true,
@@ -442,7 +454,7 @@ const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, interval
       position: "fixed",
       right: "16px",
       top: "16px",
-      zIndex: -9999, // completamente invisível
+      zIndex: -9999,
       opacity: 0,
       pointerEvents: "none",
     });
@@ -467,6 +479,7 @@ const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, interval
       if (detection && detection.descriptor) {
         const distance = faceapi.euclideanDistance(storedDesc, detection.descriptor);
         const match = distance < 0.45;
+
         console.log(`🧩 Distância: ${distance.toFixed(3)} — match: ${match}`);
 
         if (match) {
@@ -476,17 +489,18 @@ const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, interval
           break;
         }
       }
+
       await new Promise((r) => setTimeout(r, intervalMs));
     }
 
     if (!matched) {
       alert("😕 Não foi possível reconhecer o rosto. Tente novamente com mais luz.");
     }
+
   } catch (err) {
     console.error("❌ Erro durante reconhecimento facial:", err);
     alert("Erro durante o reconhecimento facial. Veja console para detalhes.");
   } finally {
-    // 🔚 Limpeza segura
     try {
       if (stream) stream.getTracks().forEach((t) => t.stop());
       if (video && video.parentNode) video.parentNode.removeChild(video);
