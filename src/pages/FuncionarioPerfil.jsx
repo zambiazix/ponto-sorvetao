@@ -1,5 +1,3 @@
-// (Arquivo completo) FuncionarioPerfil.jsx
-// --- início do arquivo ---
 import { useParams, useNavigate } from "react-router-dom";
 import { useState, useEffect, useRef } from "react";
 import { auth, db } from "../services/firebase";
@@ -170,6 +168,7 @@ export default function FuncionarioPerfil() {
 
   return () => unsub();
 }, []);
+
 // Carrega modelos e dados iniciais
 useEffect(() => {
   const carregarTudo = async () => {
@@ -207,7 +206,7 @@ useEffect(() => {
   };
 
   carregarTudo();
-}, [lojaId, funcionarioId]);
+}, []);
 
 // 🚀 Pré-carrega permissão da câmera ao abrir o perfil do funcionário
 useEffect(() => {
@@ -223,22 +222,195 @@ useEffect(() => {
     });
 }, []);
 
+  const loadRegionaisFromStorage = () => {
+    try {
+      const raw = localStorage.getItem(LS_KEY_REGIONAIS);
+      if (raw) {
+        setRegionalHolidaysText(raw);
+        const parsed = parseRegionalHolidaysText(raw);
+        setRegionalHolidaysParsed(parsed);
+      } else {
+        // default empty
+        setRegionalHolidaysText("");
+        setRegionalHolidaysParsed([]);
+      }
+    } catch (err) {
+      console.warn("Erro ao carregar feriados regionais do localStorage:", err);
+    }
+  };
+
+  const saveRegionaisToStorage = (text) => {
+    try {
+      localStorage.setItem(LS_KEY_REGIONAIS, text || "");
+      setRegionalHolidaysText(text || "");
+      const parsed = parseRegionalHolidaysText(text || "");
+      setRegionalHolidaysParsed(parsed);
+      alert("Feriados regionais salvos (localStorage).");
+    } catch (err) {
+      console.warn("Erro ao salvar feriados regionais:", err);
+      alert("Erro ao salvar feriados regionais no navegador.");
+    }
+  };
+
+  const clearRegionais = () => {
+    try {
+      localStorage.removeItem(LS_KEY_REGIONAIS);
+      setRegionalHolidaysText("");
+      setRegionalHolidaysParsed([]);
+    } catch (err) {
+      console.warn("Erro ao limpar feriados regionais:", err);
+    }
+  };
+
+  const carregarLoja = async () => {
+    try {
+      const lojaSnap = await getDoc(doc(db, "lojas", lojaId));
+      if (lojaSnap.exists()) setLojaNome(lojaSnap.data().nome);
+    } catch (err) {
+      console.error("FUNC-PERF: Erro carregarLoja:", err);
+    }
+  };
+// ✅ Função corrigida de carregarFuncionario
+const carregarFuncionario = async () => {
+  try {
+    const funcSnap = await getDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId));
+    if (funcSnap.exists()) {
+      const d = funcSnap.data();
+      // manter ambos estados sincronizados (se você usa funcData e funcionario)
+      setFuncData(d);
+      if (d.fotoReferencia && !d.faceDescriptor) {
+  console.log("FUNC-PERF: faceDescriptor ausente — gerando automaticamente...");
+  gerarEDepositarFaceDescriptor(lojaId, funcionarioId, d.fotoReferencia).then((novoDesc) => {
+    if (novoDesc) {
+      setFuncData((prev) => ({ ...prev, faceDescriptor: novoDesc }));
+    }
+  });
+}
+
+      setFuncionario({ id: funcionarioId, ...d });
+      setFotoPreview(d.fotoReferencia || "");
+      console.log("FUNC-PERF: Dados do funcionário carregados:", { id: funcionarioId, ...d });
+    } else {
+      console.warn("FUNC-PERF: Funcionário não encontrado no Firestore.");
+      setFuncData(null);
+      setFuncionario(null);
+      setFotoPreview("");
+    }
+  } catch (err) {
+    console.error("FUNC-PERF: Erro carregarFuncionario:", err);
+  }
+};
+
+  const carregarPontos = async () => {
+    try {
+      setCarregando(true);
+      const snap = await getDocs(
+        collection(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos")
+      );
+      const lista = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => b.id.localeCompare(a.id));
+      setPontos(lista);
+      console.log("FUNC-PERF: pontos carregados:", lista.length);
+    } catch (err) {
+      console.error("FUNC-PERF: Erro carregarPontos:", err);
+    } finally {
+      setCarregando(false);
+    }
+  };
+
+  const getHojeId = () => {
+    try {
+      const hoje = new Intl.DateTimeFormat("en-CA", { timeZone: BRAZIL_TZ }).format(new Date());
+      if (/^\d{4}-\d{2}-\d{2}$/.test(hoje)) return hoje;
+    } catch (err) {}
+    const agora = new Date();
+    return `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, "0")}-${String(
+      agora.getDate()
+    ).padStart(2, "0")}`;
+  };
+
+  const getHoraAtualLocal = () => {
+    try {
+      const hora = new Intl.DateTimeFormat("pt-BR", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+        timeZone: BRAZIL_TZ,
+      }).format(new Date());
+      const parts = hora.split(":").map((s) => s.padStart(2, "0"));
+      return `${parts[0]}:${parts[1]}`;
+    } catch {
+      const agora = new Date();
+      return agora.toTimeString().split(":").slice(0, 2).join(":");
+    }
+  };
+
+  const verificarFolgaAutomatica = async () => {
+    try {
+      const agoraSP = new Date(new Date().toLocaleString("en-US", { timeZone: BRAZIL_TZ }));
+      if (agoraSP.getHours() < 16) return;
+      const hoje = getHojeId();
+      const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", hoje);
+      let snap;
+      try {
+        snap = await getDoc(docRef, { source: "server" });
+      } catch {
+        snap = await getDoc(docRef);
+      }
+      if (!snap.exists()) {
+        await setDoc(docRef, { data: hoje, status: "FOLGA", criadoEm: serverTimestamp() });
+        await carregarPontos();
+      }
+    } catch (err) {
+      console.error("FUNC-PERF: Erro verificarFolgaAutomatica:", err);
+    }
+  };
+
+  const onVerifyPunchSuccess = async () => {
+    try {
+      const hoje = getHojeId();
+      const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", hoje);
+      let snap;
+      try {
+        snap = await getDoc(docRef, { source: "server" });
+      } catch {
+        snap = await getDoc(docRef);
+      }
+
+      const horaAtual = getHoraAtualLocal();
+      let dados = snap.exists() ? { ...snap.data() } : { data: hoje, status: "OK" };
+      const pontosHoje = [
+        dados.entrada,
+        dados.intervaloSaida,
+        dados.intervaloVolta,
+        dados.saida,
+      ].filter(Boolean).length;
+      if (pontosHoje >= 4) {
+        alert("⚠️ Todos os pontos do dia já foram marcados.");
+        return;
+      }
+      if (!dados.entrada) dados.entrada = horaAtual;
+      else if (!dados.intervaloSaida) dados.intervaloSaida = horaAtual;
+      else if (!dados.intervaloVolta) dados.intervaloVolta = horaAtual;
+      else if (!dados.saida) dados.saida = horaAtual;
+      await setDoc(docRef, dados, { merge: true });
+      await carregarPontos();
+      alert("✅ Ponto registrado com sucesso!");
+      setMode("view");
+    } catch (err) {
+      console.error("FUNC-PERF: ❌ Erro onVerifyPunchSuccess:", err);
+      alert("Erro ao registrar ponto.");
+    }
+  };
 // Descriptor salvo do funcionário (se houver)
-const storedDesc = funcData?.faceDescriptor ? arrayToDescriptor(funcData.faceDescriptor) : null;
+// Descriptor salvo do funcionário (se houver)
+const storedDesc = funcData?.faceDescriptor
+  ? arrayToDescriptor(funcData.faceDescriptor)
+  : null;
 
 // 🚀 Pré-carregamento invisível da câmera e bloqueio de duplo clique
-const lastRecognitionAt = { value: 0 }; // simple mutable holder to avoid re-entrancy across renders
-
 const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, intervalMs = 800 } = {}) => {
-  // evita cliques repetidos muito próximos
-  const MIN_INTERVAL_MS = 2500;
-  const now = Date.now();
-  if (now - lastRecognitionAt.value < MIN_INTERVAL_MS) {
-    console.warn("Clique ignorado — tentativa muito próxima da anterior.");
-    return;
-  }
-  lastRecognitionAt.value = now;
-
   if (reconhecimentoEmAndamento) {
     console.warn("⏳ Reconhecimento já em andamento — clique ignorado.");
     return;
@@ -247,41 +419,29 @@ const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, interval
   setReconhecimentoEmAndamento(true);
   let stream = null;
   let video = null;
-  let didCallPunch = false;
 
   try {
-    // 🔥 Pré-aquecimento invisível da câmera (não bloqueante se falhar)
+    // 🔥 Pré-aquecimento invisível da câmera
+    console.log("FUNC-PERF: pré-aquecendo câmera...");
     try {
       const warmupStream = await navigator.mediaDevices.getUserMedia({ video: true });
       warmupStream.getTracks().forEach((t) => t.stop());
-      console.log("FUNC-PERF: câmera pré-aquecida com sucesso (warmup).");
+      console.log("FUNC-PERF: câmera pré-aquecida com sucesso.");
     } catch (preErr) {
-      console.warn("⚠️ FUNC-PERF: falha no pré-aquecimento da câmera (pode não haver dispositivo ou permissão negada).", preErr);
-      // não retornamos aqui porque em muitos dispositivos a permissão só aparece ao solicitar o stream real
+      console.warn("⚠️ FUNC-PERF: falha no pré-aquecimento da câmera (sem dispositivo?)", preErr);
     }
 
-    // Verifica descriptor obrigatório
+    // ⚠️ CHECK DE DESCRIPTOR — OBRIGATÓRIO AQUI!
     if (!storedDesc) {
       alert("⚠️ Nenhuma foto cadastrada para reconhecimento facial.");
+      setReconhecimentoEmAndamento(false);
       return;
     }
 
-    // solicita stream real
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-    } catch (getErr) {
-      console.error("FUNC-PERF: erro ao acessar câmera:", getErr);
-      if (getErr && getErr.name === "NotFoundError") {
-        alert("Nenhuma câmera encontrada neste dispositivo.");
-      } else if (getErr && getErr.name === "NotAllowedError") {
-        alert("Permissão para usar a câmera negada. Atualize as permissões do navegador.");
-      } else {
-        alert("Erro ao acessar a câmera. Veja o console para detalhes.");
-      }
-      return;
-    }
+    console.log("FUNC-PERF: solicitando acesso à câmera real...");
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
 
-    // cria vídeo invisível e prende à DOM para que face-api possa ler frames
+    // Cria vídeo invisível
     video = document.createElement("video");
     Object.assign(video, {
       autoplay: true,
@@ -297,22 +457,13 @@ const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, interval
       zIndex: -9999,
       opacity: 0,
       pointerEvents: "none",
-      width: "1px",
-      height: "1px",
     });
+
     video.srcObject = stream;
     document.body.appendChild(video);
 
-    // aguarda primeiro frame
-    await new Promise((res, rej) => {
-      const timeout = setTimeout(() => {
-        rej(new Error("Timeout ao carregar vídeo da câmera"));
-      }, 3000);
-      video.onloadeddata = () => {
-        clearTimeout(timeout);
-        // delay pequeno para garantir frames
-        setTimeout(res, 150);
-      };
+    await new Promise((res) => {
+      video.onloadeddata = () => setTimeout(res, 300);
     });
 
     console.log("FUNC-PERF: vídeo pronto — iniciando detecção facial...");
@@ -320,247 +471,246 @@ const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, interval
     let matched = false;
 
     while (Date.now() - start < attemptsTimeout && !matched) {
-      // detectSingleFace aceita HTMLVideoElement
       const detection = await faceapi
         .detectSingleFace(video, new faceapi.SsdMobilenetv1Options())
         .withFaceLandmarks()
         .withFaceDescriptor();
 
       if (detection && detection.descriptor) {
-        const distance = faceapi.euclideanDistance(storedDesc, detection.descriptor);
-        const match = distance < 0.45;
-        console.log(`🧩 Distância: ${distance.toFixed(3)} — match: ${match}`);
+  // Confirma que o vídeo realmente está reproduzindo frames válidos
+  if (video.readyState < 2) {
+    console.warn("📵 Vídeo não está realmente reproduzindo ainda. Ignorando este frame.");
+    await new Promise((r) => setTimeout(r, 200));
+    continue;
+  }
 
-        if (match) {
-          matched = true;
-          console.log("✅ Rosto reconhecido! Registrando ponto...");
-          // chama o registro apenas uma vez
-          await onVerifyPunchSuccess();
-          didCallPunch = true;
-          break;
-        }
-      }
+  const distance = faceapi.euclideanDistance(storedDesc, detection.descriptor);
+  const match = distance < 0.45;
 
-      // espera antes de tentar de novo
+  if (match) {
+    console.log("✅ Rosto reconhecido — AGORA SIM pode bater ponto.");
+
+    matched = true;
+
+    // Bate ponto SOMENTE após confirmação REAL da câmera
+    await onVerifyPunchSuccess();
+    break;
+  }
+}
+
       await new Promise((r) => setTimeout(r, intervalMs));
     }
 
-    if (!matched && !didCallPunch) {
-      // mostra instrução caso não encontrado
-      console.log("FUNC-PERF: rosto não reconhecido no período definido.");
-      alert("😕 Não foi possível reconhecer o rosto. Tente novamente com mais luz e segurando o dispositivo mais estável.");
+    if (!matched) {
+      alert("😕 Não foi possível reconhecer o rosto. Tente novamente com mais luz.");
     }
+
   } catch (err) {
     console.error("❌ Erro durante reconhecimento facial:", err);
-    // erro já tratado em mensagens específicas, só alerta genérico aqui
     alert("Erro durante o reconhecimento facial. Veja console para detalhes.");
   } finally {
-    // limpeza segura
     try {
       if (stream) stream.getTracks().forEach((t) => t.stop());
       if (video && video.parentNode) video.parentNode.removeChild(video);
-    } catch (cleanupErr) {
-      console.warn("Erro na limpeza do stream/video:", cleanupErr);
-    }
+    } catch {}
     setReconhecimentoEmAndamento(false);
     console.log("FUNC-PERF: cleanup concluído (stream e vídeo fechados).");
   }
 };
-
-// botão chama esta função
-const requestPunchWithFace = async () => {
-  if (!funcData) {
-    alert("Dados do funcionário ainda não carregados. Aguarde um pouco.");
-    return;
-  }
-  await performLiveRecognitionAndPunch({ attemptsTimeout: 9000, intervalMs: 900 });
-};
-
-const handleUploadAtestado = async (dayId, file) => {
-  if (!file) return;
-  try {
-    setUploadingAtestado(true);
-    const url = await uploadImage(file);
-    await updateDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId), {
-      atestadoUrl: url,
-      atestadoUploadedAt: serverTimestamp(),
-    });
-    await carregarPontos();
-    alert("📄 Atestado enviado com sucesso!");
-  } catch {
-    alert("Erro ao enviar atestado.");
-  } finally {
-    setUploadingAtestado(false);
-  }
-};
-
-const handleExcluirPonto = async (dayId) => {
-  if (!temPermissao) return alert("Somente gerente ou admin pode ...");
-  if (!window.confirm("Excluir este dia e todos os dados associados?")) return;
-  try {
-    await deleteDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId));
-    await carregarPontos();
-    alert("🗑️ Ponto excluído com sucesso!");
-  } catch {
-    alert("Erro ao excluir ponto.");
-  }
-};
-// === EDIT MODAL HELPERS ===
-const openEditModal = (day) => {
-  if (!temPermissao) return alert("Somente gerente ou admin pode ...");
-  setEditDayId(day.id);
-  setEditValues({
-    entrada: day.entrada || "",
-    intervaloSaida: day.intervaloSaida || "",
-    intervaloVolta: day.intervaloVolta || "",
-    saida: day.saida || "",
-    status: day.status || "OK",
-  });
-  setEditOpen(true);
-};
-
-const closeEditModal = () => {
-  setEditOpen(false);
-  setEditDayId(null);
-  setEditValues({ entrada: "", intervaloSaida: "", intervaloVolta: "", saida: "", status: "OK" });
-};
-
-const handleEditChange = (field, value) => {
-  setEditValues((s) => ({ ...s, [field]: value }));
-};
-
-const saveEdit = async () => {
-  if (!editDayId) return;
-  try {
-    const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", editDayId);
-    // build payload: keep empty strings as removals
-    const payload = {
-      entrada: editValues.entrada || null,
-      intervaloSaida: editValues.intervaloSaida || null,
-      intervaloVolta: editValues.intervaloVolta || null,
-      saida: editValues.saida || null,
-      status: editValues.status || "OK",
-      atualizadoEm: serverTimestamp(),
-    };
-    // We'll use setDoc with merge true and post-process by removing keys if null (simple approach: fetch existing and set)
-    const snap = await getDoc(docRef);
-    const existing = snap.exists() ? snap.data() : {};
-    const next = { ...existing, ...payload };
-    // remove null fields
-    ["entrada", "intervaloSaida", "intervaloVolta", "saida"].forEach((k) => {
-      if (next[k] === null) delete next[k];
-    });
-    await setDoc(docRef, next, { merge: true });
-    await carregarPontos();
-    alert("Alterações salvas com sucesso!");
-    closeEditModal();
-  } catch (err) {
-    console.error("Erro ao salvar edição:", err);
-    alert("Erro ao salvar alterações. Veja console.");
-  }
-};
-// Admin helper: allow clearing a single timestamp
-const clearTimestamp = async (dayId, field) => {
-  if (!temPermissao) return alert("Somente gerente ou admin pode ...");
-  if (!window.confirm("Remover este horário?")) return;
-  try {
-    const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId);
-    const snap = await getDoc(docRef);
-    if (!snap.exists()) return alert("Documento não encontrado.");
-    const data = snap.data() || {};
-    delete data[field];
-    data.atualizadoEm = serverTimestamp();
-    await setDoc(docRef, data, { merge: true });
-    await carregarPontos();
-    alert("Horário removido.");
-  } catch (err) {
-    console.error("Erro ao remover horário:", err);
-    alert("Erro ao remover horário.");
-  }
-};
-
-const toMinutes = (t) => {
-  if (!t) return null;
-  const [h, m] = t.split(":").map(Number);
-  return h * 60 + m;
-};
-
-const calcMinutesWorkedForDay = (p) => {
-  const e = toMinutes(p.entrada),
-    isOut = toMinutes(p.intervaloSaida),
-    iv = toMinutes(p.intervaloVolta),
-    s = toMinutes(p.saida);
-  let total = 0;
-  if (e && isOut && isOut > e) total += isOut - e;
-  if (iv && s && s > iv) total += s - iv;
-  return total;
-};
-
-const minutesToHHMM = (mins) => {
-  const h = Math.floor(mins / 60);
-  const m = Math.round(mins % 60);
-  return `${h}h ${m}m`;
-};
-
-const groupByMonth = (pontosList) => {
-  const map = new Map();
-  pontosList.forEach((p) => {
-    const date = new Date(p.id + "T00:00:00");
-    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-    const label = new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(date);
-    if (!map.has(key)) map.set(key, { label, days: [], totalMinutes: 0 });
-    const entry = map.get(key);
-    entry.days.push(p);
-    entry.totalMinutes += calcMinutesWorkedForDay(p);
-  });
-  return Array.from(map.entries())
-    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-    .map(([monthKey, v]) => ({ monthKey, ...v }));
-};
-// Helpers: parse regional holidays text
-const parseRegionalHolidaysText = (text) => {
-  if (!text) return [];
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-  const out = [];
-  for (const line of lines) {
-    const parts = line.split("-");
-    const datePart = parts[0].trim();
-    const namePart = parts.slice(1).join("-").trim() || "Feriado Local";
-    if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
-      out.push({ dateIso: datePart, date: formatDateToDDMM(datePart), name: namePart });
-      continue;
+  // botão chama esta função
+  const requestPunchWithFace = async () => {
+    if (!funcData) {
+      alert("Dados do funcionário ainda não carregados. Aguarde um pouco.");
+      return;
     }
-    if (/^\d{2}\/\d{2}(\/\d{4})?$/.test(datePart)) {
-      if (/^\d{2}\/\d{2}$/.test(datePart)) {
-        out.push({ dateIso: null, date: datePart, name: namePart });
-      } else {
-        const [dd, mm, yyyy] = datePart.split("/");
-        const iso = `${yyyy}-${mm}-${dd}`;
-        out.push({ dateIso: iso, date: formatDateToDDMM(iso), name: namePart });
-      }
-      continue;
-    }
+    await performLiveRecognitionAndPunch({ attemptsTimeout: 9000, intervalMs: 900 });
+  };
+
+  const handleUploadAtestado = async (dayId, file) => {
+    if (!file) return;
     try {
-      const d = new Date(datePart);
-      if (!isNaN(d.getTime())) {
-        const iso = d.toISOString().slice(0, 10);
-        out.push({ dateIso: iso, date: formatDateToDDMM(iso), name: namePart });
-      }
-    } catch {}
-  }
-  return out;
-};
+      setUploadingAtestado(true);
+      const url = await uploadImage(file);
+      await updateDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId), {
+        atestadoUrl: url,
+        atestadoUploadedAt: serverTimestamp(),
+      });
+      await carregarPontos();
+      alert("📄 Atestado enviado com sucesso!");
+    } catch {
+      alert("Erro ao enviar atestado.");
+    } finally {
+      setUploadingAtestado(false);
+    }
+  };
 
-const formatDateToDDMM = (isoDate) => {
-  try {
-    const d = new Date(isoDate + "T00:00:00");
-    const dd = String(d.getDate()).padStart(2, "0");
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    return `${dd}/${mm}`;
-  } catch {
-    return isoDate;
-  }
-};
+  const handleExcluirPonto = async (dayId) => {
+    if (!temPermissao) return alert("Somente gerente ou admin pode ...");
+    if (!window.confirm("Excluir este dia e todos os dados associados?")) return;
+    try {
+      await deleteDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId));
+      await carregarPontos();
+      alert("🗑️ Ponto excluído com sucesso!");
+    } catch {
+      alert("Erro ao excluir ponto.");
+    }
+  };
+  // === EDIT MODAL HELPERS ===
+  const openEditModal = (day) => {
+    if (!temPermissao) return alert("Somente gerente ou admin pode ...");
+    setEditDayId(day.id);
+    setEditValues({
+      entrada: day.entrada || "",
+      intervaloSaida: day.intervaloSaida || "",
+      intervaloVolta: day.intervaloVolta || "",
+      saida: day.saida || "",
+      status: day.status || "OK",
+    });
+    setEditOpen(true);
+  };
+
+  const closeEditModal = () => {
+    setEditOpen(false);
+    setEditDayId(null);
+    setEditValues({ entrada: "", intervaloSaida: "", intervaloVolta: "", saida: "", status: "OK" });
+  };
+
+  const handleEditChange = (field, value) => {
+    setEditValues((s) => ({ ...s, [field]: value }));
+  };
+
+  const saveEdit = async () => {
+    if (!editDayId) return;
+    try {
+      const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", editDayId);
+      // build payload: keep empty strings as removals
+      const payload = {
+        entrada: editValues.entrada || null,
+        intervaloSaida: editValues.intervaloSaida || null,
+        intervaloVolta: editValues.intervaloVolta || null,
+        saida: editValues.saida || null,
+        status: editValues.status || "OK",
+        atualizadoEm: serverTimestamp(),
+      };
+      // We'll use setDoc with merge true and post-process by removing keys if null (simple approach: fetch existing and set)
+      const snap = await getDoc(docRef);
+      const existing = snap.exists() ? snap.data() : {};
+      const next = { ...existing, ...payload };
+      // remove null fields
+      ["entrada", "intervaloSaida", "intervaloVolta", "saida"].forEach((k) => {
+        if (next[k] === null) delete next[k];
+      });
+      await setDoc(docRef, next, { merge: true });
+      await carregarPontos();
+      alert("Alterações salvas com sucesso!");
+      closeEditModal();
+    } catch (err) {
+      console.error("Erro ao salvar edição:", err);
+      alert("Erro ao salvar alterações. Veja console.");
+    }
+  };
+  // Admin helper: allow clearing a single timestamp
+  const clearTimestamp = async (dayId, field) => {
+    if (!temPermissao) return alert("Somente gerente ou admin pode ...");
+    if (!window.confirm("Remover este horário?")) return;
+    try {
+      const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId);
+      const snap = await getDoc(docRef);
+      if (!snap.exists()) return alert("Documento não encontrado.");
+      const data = snap.data() || {};
+      delete data[field];
+      data.atualizadoEm = serverTimestamp();
+      await setDoc(docRef, data, { merge: true });
+      await carregarPontos();
+      alert("Horário removido.");
+    } catch (err) {
+      console.error("Erro ao remover horário:", err);
+      alert("Erro ao remover horário.");
+    }
+  };
+
+  const toMinutes = (t) => {
+    if (!t) return null;
+    const [h, m] = t.split(":").map(Number);
+    return h * 60 + m;
+  };
+
+  const calcMinutesWorkedForDay = (p) => {
+    const e = toMinutes(p.entrada),
+      isOut = toMinutes(p.intervaloSaida),
+      iv = toMinutes(p.intervaloVolta),
+      s = toMinutes(p.saida);
+    let total = 0;
+    if (e && isOut && isOut > e) total += isOut - e;
+    if (iv && s && s > iv) total += s - iv;
+    return total;
+  };
+
+  const minutesToHHMM = (mins) => {
+    const h = Math.floor(mins / 60);
+    const m = Math.round(mins % 60);
+    return `${h}h ${m}m`;
+  };
+
+  const groupByMonth = (pontosList) => {
+    const map = new Map();
+    pontosList.forEach((p) => {
+      const date = new Date(p.id + "T00:00:00");
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+      const label = new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(date);
+      if (!map.has(key)) map.set(key, { label, days: [], totalMinutes: 0 });
+      const entry = map.get(key);
+      entry.days.push(p);
+      entry.totalMinutes += calcMinutesWorkedForDay(p);
+    });
+    return Array.from(map.entries())
+      .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+      .map(([monthKey, v]) => ({ monthKey, ...v }));
+  };
+  // Helpers: parse regional holidays text
+  const parseRegionalHolidaysText = (text) => {
+    if (!text) return [];
+    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+    const out = [];
+    for (const line of lines) {
+      const parts = line.split("-");
+      const datePart = parts[0].trim();
+      const namePart = parts.slice(1).join("-").trim() || "Feriado Local";
+      if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
+        out.push({ dateIso: datePart, date: formatDateToDDMM(datePart), name: namePart });
+        continue;
+      }
+      if (/^\d{2}\/\d{2}(\/\d{4})?$/.test(datePart)) {
+        if (/^\d{2}\/\d{2}$/.test(datePart)) {
+          out.push({ dateIso: null, date: datePart, name: namePart });
+        } else {
+          const [dd, mm, yyyy] = datePart.split("/");
+          const iso = `${yyyy}-${mm}-${dd}`;
+          out.push({ dateIso: iso, date: formatDateToDDMM(iso), name: namePart });
+        }
+        continue;
+      }
+      try {
+        const d = new Date(datePart);
+        if (!isNaN(d.getTime())) {
+          const iso = d.toISOString().slice(0, 10);
+          out.push({ dateIso: iso, date: formatDateToDDMM(iso), name: namePart });
+        }
+      } catch {}
+    }
+    return out;
+  };
+
+  const formatDateToDDMM = (isoDate) => {
+    try {
+      const d = new Date(isoDate + "T00:00:00");
+      const dd = String(d.getDate()).padStart(2, "0");
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      return `${dd}/${mm}`;
+    } catch {
+      return isoDate;
+    }
+  };
 // ==== GERAR RELATÓRIO (PDF) ====
 const gerarRelatorio = async (monthObj) => {
   try {
