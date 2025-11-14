@@ -442,131 +442,111 @@ const carregarFuncionario = async () => {
 const storedDesc = funcData?.faceDescriptor
   ? arrayToDescriptor(funcData.faceDescriptor)
   : null;
-// 🚀 Pré-carregamento invisível da câmera e bloqueio de duplo clique
 // === performLiveRecognitionAndPunch (cole no lugar da função antiga) ===
 const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, intervalMs = 800 } = {}) => {
-  // previne cliques duplicados
-  if (reconhecimentoEmAndamento || botaoBloqueado) {
+  if (reconhecimentoEmAndamento) {
     console.warn("⏳ Reconhecimento já em andamento — clique ignorado.");
     return;
   }
-  setReconhecimentoEmAndamento(true);
-  setBotaoBloqueado(true);
 
-  // garante liberar botão após curto intervalo (igual Painel.jsx)
-  const desbloqueioTimeout = setTimeout(() => setBotaoBloqueado(false), 1500);
+  if (!storedDesc) {
+    alert("⚠️ Nenhuma foto cadastrada para reconhecimento facial.");
+    return;
+  }
+
+  setReconhecimentoEmAndamento(true);
 
   let stream = null;
-  let createdStreamHere = false;
   let video = null;
 
   try {
-    // Confere se há descriptor salvo (antes de abrir câmera)
-    if (!funcData || !Array.isArray(funcData.faceDescriptor) || funcData.faceDescriptor.length === 0) {
-      alert("⚠️ Nenhuma foto cadastrada para reconhecimento facial.");
-      return;
-    }
-    const storedDescriptor = arrayToDescriptor(funcData.faceDescriptor);
+    // 🔥 Pré-aquecimento
+    try {
+      const warm = await navigator.mediaDevices.getUserMedia({ video: true });
+      warm.getTracks().forEach(t => t.stop());
+    } catch {}
 
-    // Usa stream pré-aquecido se existir, caso contrário pede um novo
-    stream = cameraStreamRef.current ? cameraStreamRef.current : await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-    if (!cameraStreamRef.current) createdStreamHere = true;
+    console.log("📸 Abrindo camera...");
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
 
-    // cria vídeo invisível (ou visível se preferir); aqui invisível para não quebrar UI
+    // 🔥 Elemento de vídeo REAL
     video = document.createElement("video");
-    Object.assign(video, {
-      autoplay: true,
-      playsInline: true,
-      muted: true,
-      width: 420,
-      height: 320,
-    });
-    // posicionamento: invisível mas ativo
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+
     Object.assign(video.style, {
       position: "fixed",
-      right: "16px",
-      top: "16px",
-      zIndex: -9999,
-      opacity: 0,
-      pointerEvents: "none",
+      top: "50%",
+      left: "50%",
+      transform: "translate(-50%, -50%)",
+      width: "350px",
+      height: "300px",
+      background: "#000",
+      zIndex: 99999,
+      border: "2px solid white",
+      borderRadius: "10px"
     });
+
     video.srcObject = stream;
     document.body.appendChild(video);
 
-    // espera o vídeo realmente começar a reproduzir (mais robusto que onloadeddata)
-    await new Promise((resolve, reject) => {
-      const to = setTimeout(() => reject(new Error("timeout esperando video.play()")), 3000);
-      video.onplaying = () => {
-        clearTimeout(to);
-        // espera um pouquinho para frames estabilizarem
-        setTimeout(resolve, 150);
+    // 🔥 ESPERA REAL da câmera abrir
+    const cameraReady = await new Promise(res => {
+      let timeout = setTimeout(() => res(false), 3000);
+      video.onloadeddata = () => {
+        clearTimeout(timeout);
+        res(true);
       };
-      const p = video.play();
-      if (p && typeof p.then === "function") {
-        p.catch((err) => {
-          // não falha imediatamente aqui — deixamos o timeout cuidar
-          console.warn("video.play() rejeitado:", err);
-        });
-      }
     });
 
-    console.log("FUNC-PERF: vídeo pronto — iniciando detecção facial...");
+    if (!cameraReady) {
+      alert("❌ A câmera não conseguiu iniciar. Tente novamente.");
+      throw new Error("camera-failed");
+    }
 
+    console.log("📸 Camera pronta.");
+
+    // 🔥 Loop de reconhecimento
     const start = Date.now();
     let matched = false;
 
     while (Date.now() - start < attemptsTimeout && !matched) {
-      const detection = await faceapi
+      const det = await faceapi
         .detectSingleFace(video, new faceapi.SsdMobilenetv1Options())
         .withFaceLandmarks()
         .withFaceDescriptor();
 
-      if (detection && detection.descriptor) {
-        const distance = faceapi.euclideanDistance(storedDescriptor, detection.descriptor);
-        const isMatch = distance < 0.45;
-        console.log(`🧩 Distância: ${distance.toFixed(3)} — match: ${isMatch}`);
+      if (det?.descriptor) {
+        const distance = faceapi.euclideanDistance(storedDesc, det.descriptor);
+        console.log("DIST:", distance);
 
-        if (isMatch) {
+        if (distance < 0.45) {
           matched = true;
-          console.log("✅ Rosto reconhecido! Registrando ponto...");
-          // chama a função que marca o ponto (só aqui)
+          console.log("🎉 Rosto reconhecido! Marcando ponto...");
           await onVerifyPunchSuccess();
           break;
         }
       }
-      await new Promise((r) => setTimeout(r, intervalMs));
+      await new Promise(r => setTimeout(r, intervalMs));
     }
 
     if (!matched) {
-      alert("😕 Não foi possível reconhecer o rosto. Tente novamente com mais luz.");
-    }
-  } catch (err) {
-    console.error("❌ Erro durante reconhecimento facial:", err);
-    if (err && (err.name === "NotAllowedError" || err.name === "SecurityError")) {
-      alert("Permissão para usar a câmera negada. Libere permissão no navegador.");
-    } else if (err && err.message && err.message.includes("Requested device not found")) {
-      alert("Câmera não encontrada no dispositivo.");
-    } else {
-      alert("Erro durante o reconhecimento facial. Veja console para detalhes.");
-    }
-  } finally {
-    // cleanup: se criamos o stream aqui, paramos; se veio do pré-aquecimento, também paramos e limpamos (igual Painel)
-    try {
-      if (stream) {
-        try {
-          stream.getTracks().forEach((t) => t.stop());
-        } catch {}
-      }
-      cameraStreamRef.current = null;
-      if (video && video.parentNode) video.parentNode.removeChild(video);
-    } catch (cleanupErr) {
-      console.warn("Erro no cleanup:", cleanupErr);
+      alert("😕 Não foi possível reconhecer seu rosto. Tente com mais luz.");
     }
 
-    clearTimeout(desbloqueioTimeout);
+  } catch (err) {
+    console.error("❌ ERRO NO RECONHECIMENTO:", err);
+    alert("Erro durante o reconhecimento facial.");
+  } finally {
+    // Cleanup REAL
+    try {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      if (video && video.parentNode) video.remove();
+    } catch {}
+
     setReconhecimentoEmAndamento(false);
-    setBotaoBloqueado(false);
-    console.log("FUNC-PERF: cleanup concluído (stream e vídeo fechados).");
+    console.log("🔚 Camera fechada.");
   }
 };
   // botão chama esta função
