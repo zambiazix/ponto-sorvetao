@@ -14,14 +14,16 @@ dotenv.config();
 const app = express();
 
 // ✅ Configuração CORS — permite chamadas do Vercel e localhost
-app.use(cors({
-  origin: [
-    "https://ponto-sorvetao.vercel.app", // seu domínio no Vercel
-    "http://localhost:5173", // durante desenvolvimento local (Vite)
-  ],
-  methods: ["GET", "POST", "PUT", "DELETE"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-}));
+app.use(
+  cors({
+    origin: [
+      "https://ponto-sorvetao.vercel.app", // seu domínio no Vercel
+      "http://localhost:5173", // desenvolvimento local (Vite)
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 
 app.use(express.json());
 
@@ -35,7 +37,10 @@ const serviceAccount = {
   type: "service_account",
   project_id: process.env.FIREBASE_PROJECT_ID,
   private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
-  private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+  private_key: process
+    .env
+    .FIREBASE_PRIVATE_KEY
+    ?.replace(/\\n/g, "\n"),
   client_email: process.env.FIREBASE_CLIENT_EMAIL,
   client_id: process.env.FIREBASE_CLIENT_ID,
   auth_uri: "https://accounts.google.com/o/oauth2/auth",
@@ -51,6 +56,7 @@ admin.initializeApp({
 const db = admin.firestore();
 const auth = admin.auth();
 const PORT = process.env.PORT || 3001;
+
 // ===================================================================
 // 🕓 Função: aplica "FOLGA" automaticamente se não houver ponto no dia
 // ===================================================================
@@ -66,6 +72,7 @@ async function aplicarFolgaAutomatica() {
 
     for (const loja of lojasSnap.docs) {
       const lojaId = loja.id;
+
       const funcionariosSnap = await db
         .collection("lojas")
         .doc(lojaId)
@@ -74,6 +81,7 @@ async function aplicarFolgaAutomatica() {
 
       for (const func of funcionariosSnap.docs) {
         const funcId = func.id;
+
         const pontoRef = db
           .collection("lojas")
           .doc(lojaId)
@@ -84,8 +92,19 @@ async function aplicarFolgaAutomatica() {
 
         const pontoSnap = await pontoRef.get();
 
-        // ⚙️ Se o ponto não existir ou estiver vazio, aplica FOLGA
-        if (!pontoSnap.exists() || !pontoSnap.data()?.status) {
+        const dados = pontoSnap.exists() ? pontoSnap.data() : null;
+
+        // 🔥 Regra definitiva:
+        // Folga se NÃO houver entrada, intervaloSaida,
+        // intervaloVolta ou saída.
+        const nenhumPontoBatido =
+          !dados ||
+          (!dados.entrada &&
+            !dados.intervaloSaida &&
+            !dados.intervaloVolta &&
+            !dados.saida);
+
+        if (nenhumPontoBatido) {
           await pontoRef.set(
             {
               data: hoje,
@@ -95,7 +114,10 @@ async function aplicarFolgaAutomatica() {
             },
             { merge: true }
           );
-          console.log(`✅ Folga atribuída automaticamente a ${funcId} (loja: ${lojaId})`);
+
+          console.log(
+            `✅ Folga atribuída automaticamente a ${funcId} (loja: ${lojaId})`
+          );
         }
       }
     }
@@ -105,6 +127,7 @@ async function aplicarFolgaAutomatica() {
     console.error("❌ Erro ao aplicar folgas automáticas:", err);
   }
 }
+
 // ===================================================
 // 🧩 Rota manual para testar folgas (GET /folgas)
 // ===================================================
@@ -117,17 +140,19 @@ app.get("/folgas", async (req, res) => {
     res.status(500).send("Erro ao aplicar folgas.");
   }
 });
+
 // ===================================================
 // 🕒 Agendamento diário às 16:00 (horário de Brasília)
 // ===================================================
 cron.schedule(
-  "0 16 * * *", // 16h todos os dias
+  "0 16 * * *",
   async () => {
     console.log("⏰ Rodando tarefa de folgas automáticas (16h Brasília)...");
     await aplicarFolgaAutomatica();
   },
-  { timezone: "America/Sao_Paulo" } // força o fuso horário correto
+  { timezone: "America/Sao_Paulo" }
 );
+
 // ===================================================
 // 🗑️ Rota para deletar loja + usuário Firebase
 // ===================================================
@@ -150,23 +175,26 @@ app.post("/deletar-loja", async (req, res) => {
 
     const { uid } = lojaDoc.data();
 
-    // 1️⃣ Deleta o documento Firestore da loja
+    // 1️⃣ Remove documento no Firestore
     await lojaRef.delete();
-    console.log(`✅ Documento da loja ${email} removido do Firestore.`);
+    console.log(`✅ Documento da loja ${email} removido.`);
 
-    // 2️⃣ Deleta o usuário do Firebase Authentication
+    // 2️⃣ Remove usuário no Firebase Authentication
     if (uid) {
       try {
         await auth.deleteUser(uid);
         console.log(`✅ Usuário Firebase com UID ${uid} removido.`);
       } catch (error) {
-        console.error("⚠️ Falha ao remover usuário do Firebase:", error);
+        console.error("⚠️ Falha ao remover usuário Firebase:", error);
       }
     } else {
-      console.warn("⚠️ Loja sem UID registrado — apenas Firestore foi limpo.");
+      console.warn("⚠️ Loja sem UID — removido apenas Firestore.");
     }
 
-    res.json({ success: true, message: `Loja ${email} removida com sucesso.` });
+    res.json({
+      success: true,
+      message: `Loja ${email} removida com sucesso.`,
+    });
   } catch (err) {
     console.error("❌ Erro ao excluir loja:", err);
     res.status(500).json({ error: "Erro interno ao excluir loja." });

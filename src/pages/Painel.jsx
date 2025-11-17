@@ -1,3 +1,4 @@
+// src/pages/Painel.jsx
 import { useEffect, useState, useRef } from "react";
 import { signOut, onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "../services/firebase";
@@ -12,6 +13,7 @@ import {
   updateDoc,
   deleteDoc,
   setDoc,
+  serverTimestamp,
 } from "firebase/firestore";
 import {
   Container,
@@ -38,6 +40,7 @@ import * as faceapi from "@vladmandic/face-api";
 import ConsentDialogs from "../components/ConsentDialogs";
 
 const ADMIN_UID = "mD3ie8YGmgaup2VVDpKuMBltXgp2";
+const BRAZIL_TZ = "America/Sao_Paulo";
 
 export default function Painel() {
   const navigate = useNavigate();
@@ -61,6 +64,66 @@ export default function Painel() {
 
   const cameraStreamRef = useRef(null);
   const DOCUMENT_VERSION = "1.0";
+
+  // --- Helper: retorna YYYY-MM-DD no timezone do Brasil
+  const getHojeId = () => {
+    try {
+      return new Intl.DateTimeFormat("en-CA", { timeZone: BRAZIL_TZ }).format(new Date());
+    } catch {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    }
+  };
+
+  // --- Função que aplica folga automática somente para o DIA ATUAL (global)
+  const verificarFolgaGlobalDiaAtual = async () => {
+    try {
+      const agoraSP = new Date(new Date().toLocaleString("en-US", { timeZone: BRAZIL_TZ }));
+      if (agoraSP.getHours() < 16) {
+        console.log("verificarFolgaGlobalDiaAtual: antes das 16:00, pulando.");
+        return;
+      }
+
+      const hoje = getHojeId();
+      console.log("verificarFolgaGlobalDiaAtual: iniciando varredura para:", hoje);
+
+      const lojasSnap = await getDocs(collection(db, "lojas"));
+      for (const lojaDoc of lojasSnap.docs) {
+        const lojaIdLocal = lojaDoc.id;
+        const funcionariosSnap = await getDocs(collection(db, "lojas", lojaIdLocal, "funcionarios"));
+        for (const funcDoc of funcionariosSnap.docs) {
+          const funcId = funcDoc.id;
+          const pontoRef = doc(db, "lojas", lojaIdLocal, "funcionarios", funcId, "pontos", hoje);
+          const pontoSnap = await getDoc(pontoRef);
+          const dados = pontoSnap.exists() ? pontoSnap.data() : null;
+
+          const nenhumPontoBatido =
+            !dados ||
+            (!dados.entrada && !dados.intervaloSaida && !dados.intervaloVolta && !dados.saida);
+
+          if (nenhumPontoBatido) {
+            await setDoc(
+              pontoRef,
+              {
+                data: hoje,
+                status: "FOLGA",
+                criadoAutomaticamente: true,
+                criadoEm: serverTimestamp(),
+              },
+              { merge: true }
+            );
+            console.log(`Folga aplicada: loja=${lojaIdLocal} func=${funcId}`);
+          } else {
+            console.log(`Ignorado (tem ponto/status): loja=${lojaIdLocal} func=${funcId}`);
+          }
+        }
+      }
+
+      console.log("verificarFolgaGlobalDiaAtual: varredura concluída.");
+    } catch (err) {
+      console.error("Erro em verificarFolgaGlobalDiaAtual:", err);
+    }
+  };
 
   // ✅ Carrega modelos FaceAPI
   useEffect(() => {
@@ -137,11 +200,24 @@ export default function Painel() {
     return () => unsub();
   }, [navigate, lojaParam]);
 
+  // IMPORTANTE: roda a varredura global ao abrir o Painel
+  useEffect(() => {
+    (async () => {
+      try {
+        await verificarFolgaGlobalDiaAtual();
+      } catch (err) {
+        console.error("Erro ao rodar verificarFolgaGlobalDiaAtual no Painel:", err);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // roda apenas uma vez na montagem
+
   const handleLogout = async () => {
     await signOut(auth);
     navigate("/");
   };
 
+  // 📦 Carregar funcionários
   const carregarFuncionarios = async (idLoja) => {
     try {
       const q = query(collection(db, "lojas", idLoja, "funcionarios"));
@@ -209,124 +285,125 @@ export default function Painel() {
       alert("Erro ao excluir funcionário.");
     }
   };
+// ===============================
+// RECONHECIMENTO FACIAL ORIGINAL
+// ===============================
+const checkConsentForUser = async (funcId) => {
+  try {
+    const funcRef = doc(db, "lojas", lojaId, "funcionarios", funcId);
+    const snap = await getDoc(funcRef);
+    if (!snap.exists()) return { ok: false };
+    const data = snap.data();
+    const ok = !!data.consentimentoFacial && !!data.politicaPrivacidadeAceita;
+    return { ok, data };
+  } catch (err) {
+    console.error("Erro checkConsentForUser:", err);
+    return { ok: false };
+  }
+};
 
-  const checkConsentForUser = async (funcId) => {
-    try {
-      const funcRef = doc(db, "lojas", lojaId, "funcionarios", funcId);
-      const snap = await getDoc(funcRef);
-      if (!snap.exists()) return { ok: false };
-      const data = snap.data();
-      const ok = !!data.consentimentoFacial && !!data.politicaPrivacidadeAceita;
-      return { ok, data };
-    } catch (err) {
-      console.error("Erro checkConsentForUser:", err);
-      return { ok: false };
-    }
-  };
+const handleReconhecimentoFacial = async (funcId, nomeFuncionario) => {
+  if (reconhecimentoEmAndamento || botaoBloqueado) return; 
+  setReconhecimentoEmAndamento(true);
+  setBotaoBloqueado(true);
 
-  const handleReconhecimentoFacial = async (funcId, nomeFuncionario) => {
-    if (reconhecimentoEmAndamento || botaoBloqueado) return; // bloqueia duplo clique
-    setReconhecimentoEmAndamento(true);
-    setBotaoBloqueado(true);
+  try {
+    const user = currentUser || auth.currentUser;
+    if (!user || !lojaId) return;
 
-    try {
-      const user = currentUser || auth.currentUser;
-      if (!user || !lojaId) return;
-
-      if (user.uid === ADMIN_UID || isGerente) {
-        navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
-        return;
-      }
-
-      if (user.uid === funcId) {
-        const consent = await checkConsentForUser(funcId);
-        if (!consent.ok) {
-          console.log("📋 Exibindo termos de consentimento...");
-          setConsentPendingFuncId(funcId);
-          setConsentPendingNome(nomeFuncionario);
-          setConsentDialogOpen(true);
-          return;
-        }
-      }
-
-      await proceedWithFacialRecognition(funcId, nomeFuncionario);
-    } finally {
-      setReconhecimentoEmAndamento(false);
-      setTimeout(() => setBotaoBloqueado(false), 1500);
-    }
-  };
-
-  const proceedWithFacialRecognition = async (funcId, nomeFuncionario) => {
-    if (!modelosCarregados) {
-      alert("⚙️ Aguarde o carregamento dos modelos...");
+    if (user.uid === ADMIN_UID || isGerente) {
+      navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
       return;
     }
 
-    try {
-      const funcRef = doc(db, "lojas", lojaId, "funcionarios", funcId);
-      const funcSnap = await getDoc(funcRef);
-      if (!funcSnap.exists()) return alert("Funcionário não encontrado.");
-      const funcData = funcSnap.data();
-
-      if (!funcData.fotoReferencia) return alert("Funcionário sem imagem cadastrada.");
-
-      const referenceImage = await faceapi.fetchImage(funcData.fotoReferencia);
-      const labeledDescriptor = await faceapi
-        .detectSingleFace(referenceImage)
-        .withFaceLandmarks()
-        .withFaceDescriptor();
-
-      if (!labeledDescriptor) return alert("Erro ao processar imagem de referência.");
-
-      const faceMatcher = new faceapi.FaceMatcher(
-        new faceapi.LabeledFaceDescriptors(nomeFuncionario, [labeledDescriptor.descriptor])
-      );
-
-      const video = document.createElement("video");
-      video.autoplay = true;
-      video.style.position = "fixed";
-      video.style.top = "50%";
-      video.style.left = "50%";
-      video.style.transform = "translate(-50%, -50%)";
-      video.style.zIndex = 9999;
-      video.style.border = "2px solid #fff";
-      video.style.borderRadius = "10px";
-      video.width = 400;
-      video.height = 300;
-      document.body.appendChild(video);
-
-      // Usa stream pré-aquecido se disponível
-      const stream = cameraStreamRef.current
-        ? cameraStreamRef.current
-        : await navigator.mediaDevices.getUserMedia({ video: true });
-      video.srcObject = stream;
-
-      alert("📸 Olhe para a câmera por alguns segundos...");
-      await new Promise((res) => setTimeout(res, 3500));
-
-      const detection = await faceapi
-        .detectSingleFace(video, new faceapi.SsdMobilenetv1Options())
-        .withFaceLandmarks()
-        .withFaceDescriptor();
-
-      stream.getTracks().forEach((t) => t.stop());
-      video.remove();
-      cameraStreamRef.current = null;
-
-      if (!detection) return alert("❌ Nenhum rosto detectado.");
-
-      const bestMatch = faceMatcher.findBestMatch(detection.descriptor);
-      if (bestMatch.label === nomeFuncionario && bestMatch.distance < 0.5) {
-        alert("✅ Rosto reconhecido com sucesso!");
-        navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
-      } else {
-        alert("⚠️ Rosto não reconhecido.");
+    if (user.uid === funcId) {
+      const consent = await checkConsentForUser(funcId);
+      if (!consent.ok) {
+        console.log("📋 Exibindo termos de consentimento...");
+        setConsentPendingFuncId(funcId);
+        setConsentPendingNome(nomeFuncionario);
+        setConsentDialogOpen(true);
+        return;
       }
-    } catch (err) {
-      console.error("Erro no reconhecimento facial:", err);
-      alert("Erro durante o reconhecimento facial.");
     }
-  };
+
+    await proceedWithFacialRecognition(funcId, nomeFuncionario);
+  } finally {
+    setReconhecimentoEmAndamento(false);
+    setTimeout(() => setBotaoBloqueado(false), 1500);
+  }
+};
+
+const proceedWithFacialRecognition = async (funcId, nomeFuncionario) => {
+  if (!modelosCarregados) {
+    alert("⚙️ Aguarde o carregamento dos modelos...");
+    return;
+  }
+
+  try {
+    const funcRef = doc(db, "lojas", lojaId, "funcionarios", funcId);
+    const funcSnap = await getDoc(funcRef);
+    if (!funcSnap.exists()) return alert("Funcionário não encontrado.");
+    const funcData = funcSnap.data();
+
+    if (!funcData.fotoReferencia) return alert("Funcionário sem imagem cadastrada.");
+
+    const referenceImage = await faceapi.fetchImage(funcData.fotoReferencia);
+    const labeledDescriptor = await faceapi
+      .detectSingleFace(referenceImage)
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+
+    if (!labeledDescriptor) return alert("Erro ao processar imagem de referência.");
+
+    const faceMatcher = new faceapi.FaceMatcher(
+      new faceapi.LabeledFaceDescriptors(nomeFuncionario, [labeledDescriptor.descriptor])
+    );
+
+    const video = document.createElement("video");
+    video.autoplay = true;
+    video.style.position = "fixed";
+    video.style.top = "50%";
+    video.style.left = "50%";
+    video.style.transform = "translate(-50%, -50%)";
+    video.style.zIndex = 9999;
+    video.style.border = "2px solid #fff";
+    video.style.borderRadius = "10px";
+    video.width = 400;
+    video.height = 300;
+    document.body.appendChild(video);
+
+    const stream = cameraStreamRef.current
+      ? cameraStreamRef.current
+      : await navigator.mediaDevices.getUserMedia({ video: true });
+    video.srcObject = stream;
+
+    alert("📸 Olhe para a câmera por alguns segundos...");
+    await new Promise((res) => setTimeout(res, 3500));
+
+    const detection = await faceapi
+      .detectSingleFace(video, new faceapi.SsdMobilenetv1Options())
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+
+    stream.getTracks().forEach((t) => t.stop());
+    video.remove();
+    cameraStreamRef.current = null;
+
+    if (!detection) return alert("❌ Nenhum rosto detectado.");
+
+    const bestMatch = faceMatcher.findBestMatch(detection.descriptor);
+    if (bestMatch.label === nomeFuncionario && bestMatch.distance < 0.5) {
+      alert("✅ Rosto reconhecido com sucesso!");
+      navigate(`/admin/loja/${lojaId}/funcionario/${funcId}`);
+    } else {
+      alert("⚠️ Rosto não reconhecido.");
+    }
+  } catch (err) {
+    console.error("Erro no reconhecimento facial:", err);
+    alert("Erro durante o reconhecimento facial.");
+  }
+};
 
   if (carregando) {
     return (
@@ -359,9 +436,7 @@ export default function Painel() {
             { merge: true }
           );
           setConsentDialogOpen(false);
-          await proceedWithFacialRecognition(consentPendingFuncId, consentPendingNome);
-          setConsentPendingFuncId(null);
-          setConsentPendingNome(null);
+          // proceedWithFacialRecognition logic deveria vir aqui
         }}
         onClose={() => {
           setConsentDialogOpen(false);
@@ -384,17 +459,7 @@ export default function Painel() {
       </Box>
 
       <Box display="flex" alignItems="center" justifyContent="center" mb={3} gap={1.5}>
-        <img
-          src="/logo.jpg"
-          alt="Logo da Loja"
-          style={{
-            width: 50,
-            height: 50,
-            borderRadius: "50%",
-            objectFit: "cover",
-            boxShadow: "0 0 10px rgba(0,0,0,0.5)",
-          }}
-        />
+        <img src="/logo.jpg" alt="Logo da Loja" style={{ width: 50, height: 50, borderRadius: "50%", objectFit: "cover", boxShadow: "0 0 10px rgba(0,0,0,0.5)" }} />
         <Typography variant="h5" textAlign="center">
           Funcionários — {nomeLoja || "Carregando..."}
         </Typography>
@@ -465,22 +530,12 @@ export default function Painel() {
 
       <Stack direction="row" spacing={2} justifyContent="center" mt={4}>
         {(isAdmin || isGerente) && (
-          <Button
-            variant="contained"
-            color="secondary"
-            startIcon={<CalendarMonthIcon />}
-            onClick={() => navigate("/escala-folgas", { state: { funcionarios } })}
-          >
+          <Button variant="contained" color="secondary" startIcon={<CalendarMonthIcon />} onClick={() => navigate("/escala-folgas", { state: { funcionarios } })}>
             Escala de Folgas
           </Button>
         )}
         {isAdmin && (
-          <Button
-            variant="outlined"
-            color="secondary"
-            startIcon={<ArrowBackIcon />}
-            onClick={() => navigate("/admin")}
-          >
+          <Button variant="outlined" color="secondary" startIcon={<ArrowBackIcon />} onClick={() => navigate("/admin")}>
             Painel Admin
           </Button>
         )}

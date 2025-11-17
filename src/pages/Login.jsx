@@ -1,3 +1,4 @@
+// src/pages/Login.jsx
 import { useState, useEffect } from "react";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth, db } from "../services/firebase";
@@ -16,7 +17,9 @@ import {
   Box,
 } from "@mui/material";
 import { Visibility, VisibilityOff } from "@mui/icons-material";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, collection, getDocs, setDoc, serverTimestamp } from "firebase/firestore";
+
+const BRAZIL_TZ = "America/Sao_Paulo";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -37,6 +40,68 @@ export default function Login() {
     }
   }, []);
 
+  // --- Helper: retorna YYYY-MM-DD no timezone do Brasil
+  const getHojeId = () => {
+    try {
+      return new Intl.DateTimeFormat("en-CA", { timeZone: BRAZIL_TZ }).format(new Date());
+    } catch {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    }
+  };
+
+  // --- Função que aplica folga automática somente para o DIA ATUAL (global)
+  const verificarFolgaGlobalDiaAtual = async () => {
+    try {
+      const agoraSP = new Date(new Date().toLocaleString("en-US", { timeZone: BRAZIL_TZ }));
+      if (agoraSP.getHours() < 16) {
+        console.log("verificarFolgaGlobalDiaAtual: antes das 16:00, pulando.");
+        return;
+      }
+
+      const hoje = getHojeId();
+      console.log("verificarFolgaGlobalDiaAtual: executando varredura para:", hoje);
+
+      const lojasSnap = await getDocs(collection(db, "lojas"));
+      for (const lojaDoc of lojasSnap.docs) {
+        const lojaId = lojaDoc.id;
+        const funcionariosSnap = await getDocs(collection(db, "lojas", lojaId, "funcionarios"));
+        for (const funcDoc of funcionariosSnap.docs) {
+          const funcId = funcDoc.id;
+          const pontoRef = doc(db, "lojas", lojaId, "funcionarios", funcId, "pontos", hoje);
+          const pontoSnap = await getDoc(pontoRef);
+          const dados = pontoSnap.exists() ? pontoSnap.data() : null;
+
+          const nenhumPontoBatido =
+            !dados ||
+            (!dados.entrada && !dados.intervaloSaida && !dados.intervaloVolta && !dados.saida);
+
+          // Se não houve nenhum ponto e não existe status diferente, marca folga
+          if (nenhumPontoBatido) {
+            await setDoc(
+              pontoRef,
+              {
+                data: hoje,
+                status: "FOLGA",
+                criadoAutomaticamente: true,
+                criadoEm: serverTimestamp(),
+              },
+              { merge: true }
+            );
+            console.log(`Folga aplicada: loja=${lojaId} func=${funcId}`);
+          } else {
+            // Já há algo (ou status) — não substituir
+            console.log(`Ignorado (tem ponto/status): loja=${lojaId} func=${funcId}`);
+          }
+        }
+      }
+
+      console.log("verificarFolgaGlobalDiaAtual: varredura concluída.");
+    } catch (err) {
+      console.error("Erro em verificarFolgaGlobalDiaAtual:", err);
+    }
+  };
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setErro("");
@@ -46,7 +111,7 @@ export default function Login() {
       const userCredential = await signInWithEmailAndPassword(auth, email, senha);
       const user = userCredential.user;
 
-      // 🔐 Lembrar login
+      // salvar credenciais (opcional)
       if (lembrar) {
         localStorage.setItem("userEmail", email);
         localStorage.setItem("userSenha", senha);
@@ -55,13 +120,15 @@ export default function Login() {
         localStorage.removeItem("userSenha");
       }
 
-      // 👑 Admin
+      // Antes de redirecionar, rodar varredura global (se for >= 16:00)
+      await verificarFolgaGlobalDiaAtual();
+
+      // redirecionamento (mesma lógica que você tinha)
       if (user.email === "admin@sorvetaoitaliano.com") {
         navigate("/admin");
         return;
       }
 
-      // 🧑‍💼 Gerente
       const gerenteRef = doc(db, "gerentes", user.uid);
       const gerenteSnap = await getDoc(gerenteRef);
       if (gerenteSnap.exists()) {
@@ -75,7 +142,6 @@ export default function Login() {
         }
       }
 
-      // 🏪 Loja comum
       const lojaRef = doc(db, "lojas", email.trim().toLowerCase());
       const lojaSnap = await getDoc(lojaRef);
 
@@ -128,13 +194,9 @@ export default function Login() {
           />
         </Box>
 
-<Typography
-  variant="h5"
-  mb={2}
-  sx={{ fontWeight: "bold", color: "white" }}
->
-  Acesso ao Sistema
-</Typography>
+        <Typography variant="h5" mb={2} sx={{ fontWeight: "bold", color: "white" }}>
+          Acesso ao Sistema
+        </Typography>
 
         {erro && (
           <Typography color="error" variant="body2" mb={2}>
@@ -165,11 +227,7 @@ export default function Login() {
               style: { color: "white" },
               endAdornment: (
                 <InputAdornment position="end">
-                  <IconButton
-                    onClick={() => setMostrarSenha(!mostrarSenha)}
-                    edge="end"
-                    sx={{ color: "#bbb" }}
-                  >
+                  <IconButton onClick={() => setMostrarSenha(!mostrarSenha)} edge="end" sx={{ color: "#bbb" }}>
                     {mostrarSenha ? <VisibilityOff /> : <Visibility />}
                   </IconButton>
                 </InputAdornment>
@@ -179,13 +237,7 @@ export default function Login() {
           />
 
           <FormControlLabel
-            control={
-              <Checkbox
-                checked={lembrar}
-                onChange={(e) => setLembrar(e.target.checked)}
-                sx={{ color: "#2196f3" }}
-              />
-            }
+            control={<Checkbox checked={lembrar} onChange={(e) => setLembrar(e.target.checked)} sx={{ color: "#2196f3" }} />}
             label="Conectar automaticamente"
             sx={{ color: "#bbb", mb: 2 }}
           />
