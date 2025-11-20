@@ -59,7 +59,7 @@ import {
 } from "../utils/faceRecognition";
 // PDF libs
 import jsPDF from "jspdf";
-import "jspdf-autotable";
+import autoTable from "jspdf-autotable";
 import ConsentDialogs from "../components/ConsentDialogs"; // ajuste o path conforme sua estrutura
 
 const ADMIN_UID = "mD3ie8YGmgaup2VVDpKuMBltXgp2";
@@ -130,6 +130,7 @@ export default function FuncionarioPerfil() {
   const [botaoBloqueado, setBotaoBloqueado] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editDayId, setEditDayId] = useState(null);
+  const [selectedMonth, setSelectedMonth] = useState(null);
   const [editValues, setEditValues] = useState({
     entrada: "",
     intervaloSaida: "",
@@ -1212,15 +1213,19 @@ const handleFileUpload = async (e) => {
             <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: "#fff" }} />}>
               <Box sx={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2 }}>
                 <Typography sx={{ textTransform: "capitalize" }}>{month.label} — ⏱️ {minutesToHHMM(month.totalMinutes)}</Typography>
-                {isAdmin ? (
-                  <Button variant="outlined" size="small" onClick={() => gerarRelatorio(month)}>
-                    Gerar Relatório
-                  </Button>
-                ) : (
-                  <Button variant="outlined" size="small" disabled>
-                    Gerar Relatório
-                  </Button>
-                )}
+                {(isAdmin || isGerente) ? (
+  <Button
+    variant="outlined"
+    size="small"
+    onClick={() => gerarRelatorio(month)}
+  >
+    Gerar Relatório
+  </Button>
+) : (
+  <Button variant="outlined" size="small" disabled>
+    Gerar Relatório
+  </Button>
+)}
               </Box>
             </AccordionSummary>
             <AccordionDetails>
