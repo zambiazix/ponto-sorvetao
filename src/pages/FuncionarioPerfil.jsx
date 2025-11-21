@@ -533,7 +533,7 @@ const performLiveRecognitionAndPunch = async ({ attemptsTimeout = 9000, interval
     }
 
     if (!matched) {
-      alert("😕 Não foi possível reconhecer seu rosto. Tente com mais luz.");
+      alert("😕 Não foi possível reconhecer seu rosto. Tente procurar um ângulo melhor.");
     }
 
   } catch (err) {
@@ -1261,7 +1261,7 @@ const handleFileUpload = async (e) => {
         </Stack>
 
         <Typography variant="body2" color="#bbb" sx={{ mt: 1 }}>
-          Entrada: {p.entrada || "-"} | Saída Intervalo: {p.intervaloSaida || "-"} | Volta:{" "}
+          Entrada: {p.entrada || "-"} | Saída Int.: {p.intervaloSaida || "-"} | Volta Int.:{" "}
           {p.intervaloVolta || "-"} | Saída: {p.saida || "-"}
         </Typography>
 
