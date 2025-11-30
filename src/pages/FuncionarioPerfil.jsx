@@ -404,41 +404,92 @@ const carregarFuncionario = async () => {
   };
 
   const onVerifyPunchSuccess = async () => {
-    try {
-      const hoje = getHojeId();
-      const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", hoje);
-      let snap;
-      try {
-        snap = await getDoc(docRef, { source: "server" });
-      } catch {
-        snap = await getDoc(docRef);
-      }
+  try {
+    const agoraSP = new Date(new Date().toLocaleString("en-US", { timeZone: BRAZIL_TZ }));
+    const horaAtual = getHoraAtualLocal();
 
-      const horaAtual = getHoraAtualLocal();
-      let dados = snap.exists() ? { ...snap.data() } : { data: hoje, status: "OK" };
-      const pontosHoje = [
-        dados.entrada,
-        dados.intervaloSaida,
-        dados.intervaloVolta,
-        dados.saida,
-      ].filter(Boolean).length;
-      if (pontosHoje >= 4) {
-        alert("⚠️ Todos os pontos do dia já foram marcados.");
-        return;
-      }
-      if (!dados.entrada) dados.entrada = horaAtual;
-      else if (!dados.intervaloSaida) dados.intervaloSaida = horaAtual;
-      else if (!dados.intervaloVolta) dados.intervaloVolta = horaAtual;
-      else if (!dados.saida) dados.saida = horaAtual;
-      await setDoc(docRef, dados, { merge: true });
-      await carregarPontos();
-      alert("✅ Ponto registrado com sucesso!");
-      setMode("view");
-    } catch (err) {
-      console.error("FUNC-PERF: ❌ Erro onVerifyPunchSuccess:", err);
-      alert("Erro ao registrar ponto.");
+    // ID do dia atual
+    const hojeId = getHojeId();
+
+    // ID do dia anterior
+    const ontemDate = new Date(agoraSP);
+    ontemDate.setDate(ontemDate.getDate() - 1);
+    const ontemId = new Intl.DateTimeFormat("en-CA", {
+      timeZone: BRAZIL_TZ
+    }).format(ontemDate);
+
+    // -------------- REGRA NOVA AQUI ---------------
+    // Se a hora é entre 00:00 e 04:59, consideramos como SAÍDA do dia anterior
+    const horaNum = parseInt(horaAtual.split(":")[0]);
+
+    let targetDayId = hojeId;
+    let isNightExit = false;
+
+    if (horaNum >= 0 && horaNum < 5) {
+      // madrugada → deve bater a saída no dia anterior
+      targetDayId = ontemId;
+      isNightExit = true;
     }
-  };
+
+    // -----------------------------------------------
+
+    const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", targetDayId);
+
+    let snap;
+    try {
+      snap = await getDoc(docRef, { source: "server" });
+    } catch {
+      snap = await getDoc(docRef);
+    }
+
+    // Carrega ou cria dados
+    let dados = snap.exists()
+      ? { ...snap.data() }
+      : { data: targetDayId, status: "OK" };
+
+    // Conta quantos pontos já existem
+    const pontosHoje = [
+      dados.entrada,
+      dados.intervaloSaida,
+      dados.intervaloVolta,
+      dados.saida,
+    ].filter(Boolean).length;
+
+    // ------- Lógica padrão de preenchimento -------
+    if (!dados.entrada) {
+      dados.entrada = horaAtual;
+    } else if (!dados.intervaloSaida) {
+      dados.intervaloSaida = horaAtual;
+    } else if (!dados.intervaloVolta) {
+      dados.intervaloVolta = horaAtual;
+    } else if (!dados.saida) {
+      dados.saida = horaAtual;
+    } else {
+      alert("⚠️ Todos os pontos deste dia já foram marcados.");
+      return;
+    }
+
+    // Se for ponto da madrugada aplicado retroativamente, garante que é SAÍDA
+    if (isNightExit) {
+      dados.saida = horaAtual;
+    }
+
+    await setDoc(docRef, dados, { merge: true });
+
+    await carregarPontos();
+
+    alert(
+      isNightExit
+        ? "✅ Saída registrada no dia anterior!"
+        : "✅ Ponto registrado com sucesso!"
+    );
+
+    setMode("view");
+  } catch (err) {
+    console.error("FUNC-PERF: ❌ Erro onVerifyPunchSuccess:", err);
+    alert("Erro ao registrar ponto.");
+  }
+};
 // Descriptor salvo do funcionário (se houver)
 const storedDesc = funcData?.faceDescriptor
   ? arrayToDescriptor(funcData.faceDescriptor)
