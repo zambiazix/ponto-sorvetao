@@ -143,6 +143,18 @@ export default function FuncionarioPerfil() {
     saida: "",
     status: "OK",
   });
+  // === PONTO MANUAL (ADMIN / GERENTE) ===
+const [openManualPointModal, setOpenManualPointModal] = useState(false);
+const [manualPointMonth, setManualPointMonth] = useState(null);
+const [manualPointDay, setManualPointDay] = useState("");
+const [manualPointData, setManualPointData] = useState({
+  entrada: "",
+  intervaloSaida: "",
+  intervaloVolta: "",
+  saida: "",
+  status: "OK",
+});
+
   const STATUS_OPTIONS = ["OK", "FOLGA", "ATESTADO", "FALTA", "FÉRIAS", "SUSPENSÃO", "DISPENSA"];
   const cameraStreamRef = useRef(null);
 
@@ -598,6 +610,63 @@ export default function FuncionarioPerfil() {
   }
 };
 
+const openAddManualPointModal = (monthObj) => {
+  setManualPointMonth(monthObj);
+  setManualPointDay("");
+  setManualPointData({
+    entrada: "",
+    intervaloSaida: "",
+    intervaloVolta: "",
+    saida: "",
+    status: "OK",
+  });
+  setOpenManualPointModal(true);
+};
+
+const salvarPontoManual = async () => {
+  if (!manualPointDay) {
+    alert("Selecione o dia.");
+    return;
+  }
+
+  const existing = (manualPointMonth?.days || []).find(
+    (d) => d.id === manualPointDay
+  );
+
+  if (existing) {
+    const confirmar = window.confirm(
+      "Já existe um ponto registrado neste dia. Deseja REALMENTE substituir?"
+    );
+    if (!confirmar) return;
+  }
+
+  try {
+    await setDoc(
+      doc(
+        db,
+        "lojas",
+        lojaId,
+        "funcionarios",
+        funcionarioId,
+        "pontos",
+        manualPointDay
+      ),
+      {
+        ...manualPointData,
+        manual: true,
+        createdBy: isAdmin ? "ADMIN" : "GERENTE",
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    await carregarPontos();
+    setOpenManualPointModal(false);
+  } catch (err) {
+    console.error(err);
+    alert("Erro ao salvar ponto manual.");
+  }
+};
 
   const handleExcluirPonto = async (dayId) => {
     if (!temPermissao) return alert("Somente gerente ou admin pode ...");
@@ -1495,6 +1564,20 @@ if (atestados.length > 0) {
             <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: "#fff" }} />}>
               <Box sx={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2 }}>
                 <Typography sx={{ textTransform: "capitalize" }}>{month.label} — ⏱️ {minutesToHHMM(month.totalMinutes)}</Typography>
+                {(isAdmin || isGerente) && (
+  <Button
+    size="small"
+    variant="outlined"
+    sx={{ ml: 2 }}
+    onClick={(e) => {
+      e.stopPropagation(); // MUITO IMPORTANTE
+      openAddManualPointModal(month);
+    }}
+  >
+    + Ponto Manual
+  </Button>
+)}
+
                 {(isAdmin || isGerente) ? (
                   <Stack direction="row" spacing={1}>
                     <Button variant="outlined" size="small" onClick={() => gerarRelatorio(month)}>
@@ -1576,6 +1659,7 @@ if (atestados.length > 0) {
 
       {/* EDIT DIALOG */}
       <Dialog open={editOpen} onClose={closeEditModal} fullWidth maxWidth="sm">
+      
         <DialogTitle>Editar Ponto - {editDayId}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
@@ -1607,9 +1691,93 @@ if (atestados.length > 0) {
           </Button>
         </DialogActions>
       </Dialog>
+      <Dialog open={openManualPointModal} onClose={() => setOpenManualPointModal(false)} maxWidth="sm" fullWidth>
+  <DialogTitle>Adicionar ponto manual</DialogTitle>
+
+  <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+    <TextField
+      select
+      label="Dia"
+      value={manualPointDay}
+      onChange={(e) => setManualPointDay(e.target.value)}
+    >
+      {manualPointMonth &&
+        Array.from(
+          { length: new Date(
+            Number(manualPointMonth.monthKey.split("-")[0]),
+            Number(manualPointMonth.monthKey.split("-")[1]),
+            0
+          ).getDate() },
+          (_, i) => {
+            const day = i + 1;
+            const [y, m] = manualPointMonth.monthKey.split("-");
+            const iso = `${y}-${m}-${String(day).padStart(2, "0")}`;
+            return (
+              <MenuItem key={iso} value={iso}>
+                {day}
+              </MenuItem>
+            );
+          }
+        )}
+    </TextField>
+
+    <TextField
+      label="Entrada"
+      value={manualPointData.entrada}
+      disabled={manualPointData.status !== "OK"}
+      onChange={(e) => setManualPointData({ ...manualPointData, entrada: e.target.value })}
+    />
+
+    <TextField
+      label="Saída intervalo"
+      value={manualPointData.intervaloSaida}
+      disabled={manualPointData.status !== "OK"}
+      onChange={(e) =>
+        setManualPointData({ ...manualPointData, intervaloSaida: e.target.value })
+      }
+    />
+
+    <TextField
+      label="Volta intervalo"
+      value={manualPointData.intervaloVolta}
+      disabled={manualPointData.status !== "OK"}
+      onChange={(e) =>
+        setManualPointData({ ...manualPointData, intervaloVolta: e.target.value })
+      }
+    />
+
+    <TextField
+      label="Saída"
+      value={manualPointData.saida}
+      disabled={manualPointData.status !== "OK"}
+      onChange={(e) => setManualPointData({ ...manualPointData, saida: e.target.value })}
+    />
+
+    <TextField
+      select
+      label="Status"
+      value={manualPointData.status}
+      onChange={(e) => setManualPointData({ ...manualPointData, status: e.target.value })}
+    >
+      <MenuItem value="OK">OK</MenuItem>
+      <MenuItem value="Atestado">Atestado</MenuItem>
+      <MenuItem value="Falta">Falta</MenuItem>
+      <MenuItem value="Folga">Folga</MenuItem>
+    </TextField>
+  </DialogContent>
+
+  <DialogActions>
+    <Button onClick={() => setOpenManualPointModal(false)}>Cancelar</Button>
+    <Button variant="contained" onClick={salvarPontoManual}>
+      Salvar
+    </Button>
+  </DialogActions>
+</Dialog>
+
     </Container>
   );
 } // fim do componente
+
 
 // Converte minutos para formato HH:MM
 function minutesToHHMM(minutos) {
