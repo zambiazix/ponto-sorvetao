@@ -38,6 +38,9 @@ import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import * as faceapi from "@vladmandic/face-api";
 import ConsentDialogs from "../components/ConsentDialogs";
+import PontoRapido from "../components/PontoRapido";
+import { useFaceApi } from "../contexts/FaceApiContext";
+import FaceRetouchingNaturalIcon from "@mui/icons-material/FaceRetouchingNatural";
 
 const ADMIN_UID = "mD3ie8YGmgaup2VVDpKuMBltXgp2";
 const BRAZIL_TZ = "America/Sao_Paulo";
@@ -60,9 +63,9 @@ export default function Painel() {
   const [consentPendingFuncId, setConsentPendingFuncId] = useState(null);
   const [consentPendingNome, setConsentPendingNome] = useState(null);
   const [reconhecimentoEmAndamento, setReconhecimentoEmAndamento] = useState(false);
+  const [pontoRapidoOpen, setPontoRapidoOpen] = useState(false);
   const [botaoBloqueado, setBotaoBloqueado] = useState(false);
 
-  const cameraStreamRef = useRef(null);
   const DOCUMENT_VERSION = "1.0";
 
   // --- Helper: retorna YYYY-MM-DD no timezone do Brasil
@@ -125,49 +128,14 @@ export default function Painel() {
     }
   };
 
-  // ✅ Carrega modelos FaceAPI
-  useEffect(() => {
-    const loadModels = async () => {
-      try {
-        const MODEL_URL = "/models";
-        await Promise.all([
-          faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
-          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-        ]);
-        console.log("✅ Modelos carregados!");
-        setModelosCarregados(true);
-      } catch (error) {
-        console.error("❌ Erro ao carregar modelos:", error);
-      }
-    };
-    loadModels();
-  }, []);
-
-  // 🚀 Pré-aquecimento invisível da câmera (mantém stream ativo, melhora tempo de abertura)
-  useEffect(() => {
-    let streamAtivo = null;
-    const preAquecerCamera = async () => {
-      try {
-        streamAtivo = await navigator.mediaDevices.getUserMedia({ video: true });
-        cameraStreamRef.current = streamAtivo;
-        console.log("📸 Câmera pré-aquecida e pronta!");
-      } catch (err) {
-        console.warn("⚠️ Usuário negou acesso à câmera antecipado:", err);
-      }
-    };
-    preAquecerCamera();
-
-    // 🔒 encerra stream ao sair
-    return () => {
-      if (cameraStreamRef.current) {
-        cameraStreamRef.current.getTracks().forEach((t) => t.stop());
-        cameraStreamRef.current = null;
-        console.log("🔴 Câmera pré-aquecida encerrada.");
-      }
-    };
-  }, []);
-
+ // ✅ Usa modelos e câmera do contexto global (já carregados)
+const { modelsLoaded, getCameraStream } = useFaceApi();
+useEffect(() => {
+  if (modelsLoaded) {
+    setModelosCarregados(true);
+    console.log("✅ Modelos disponíveis via contexto");
+  }
+}, [modelsLoaded]);
   // 👤 Verifica usuário logado
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -362,6 +330,8 @@ const proceedWithFacialRecognition = async (funcId, nomeFuncionario) => {
 
     const video = document.createElement("video");
     video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
     video.style.position = "fixed";
     video.style.top = "50%";
     video.style.left = "50%";
@@ -369,26 +339,35 @@ const proceedWithFacialRecognition = async (funcId, nomeFuncionario) => {
     video.style.zIndex = 9999;
     video.style.border = "2px solid #fff";
     video.style.borderRadius = "10px";
-    video.width = 400;
-    video.height = 300;
+    video.style.objectFit = "cover";
+    video.width = 480;
+    video.height = 360;
     document.body.appendChild(video);
 
-    const stream = cameraStreamRef.current
-      ? cameraStreamRef.current
-      : await navigator.mediaDevices.getUserMedia({ video: true });
+    // 🔥 Usa stream PRÉ-AQUECIDO do contexto
+    const stream = await getCameraStream();
     video.srcObject = stream;
 
-    alert("📸 Olhe para a câmera por alguns segundos...");
-    await new Promise((res) => setTimeout(res, 3500));
+    // Aguarda a câmera estar pronta (sem alert bloqueante)
+    await new Promise((resolve) => {
+      if (video.readyState >= 2) return resolve();
+      video.onloadeddata = resolve;
+      setTimeout(resolve, 2000);
+    });
+
+    // Pequeno delay para a imagem estabilizar
+    await new Promise((res) => setTimeout(res, 1500));
 
     const detection = await faceapi
-      .detectSingleFace(video, new faceapi.SsdMobilenetv1Options())
+      .detectSingleFace(
+        video,
+        new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 })
+      )
       .withFaceLandmarks()
       .withFaceDescriptor();
 
-    stream.getTracks().forEach((t) => t.stop());
+    // 🔥 NÃO para o stream — mantém pré-aquecido no contexto
     video.remove();
-    cameraStreamRef.current = null;
 
     if (!detection) return alert("❌ Nenhum rosto detectado.");
 
@@ -483,7 +462,28 @@ const proceedWithFacialRecognition = async (funcId, nomeFuncionario) => {
           </Box>
         </Paper>
       )}
+      {/* 🕐 BOTÃO BATER PONTO RÁPIDO */}
+      <Button
+        variant="contained"
+        color="success"
+        size="large"
+        fullWidth
+        startIcon={<FaceRetouchingNaturalIcon />}
+        onClick={() => setPontoRapidoOpen(true)}
+        sx={{ mb: 2, py: 1.5, fontSize: "1.1rem" }}
+      >
+        🕐 Bater Ponto Rápido
+      </Button>
 
+      <PontoRapido
+        open={pontoRapidoOpen}
+        onClose={() => {
+          setPontoRapidoOpen(false);
+          carregarFuncionarios(lojaId); // recarrega após ponto
+        }}
+        lojaId={lojaId}
+        funcionarios={funcionarios}
+      />
       <Paper sx={{ p: 2, bgcolor: "#1e1e1e", color: "white", borderRadius: 3 }}>
         {funcionarios.length === 0 ? (
           <Typography color="gray" align="center">

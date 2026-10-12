@@ -5,10 +5,13 @@ import FuncionarioPerfil from "./pages/FuncionarioPerfil";
 import AdminPainel from "./pages/AdminPainel";
 import EscalaFolgas from "./pages/EscalaFolgas"; // ✅ Importa o componente novo
 
+import { FaceApiProvider } from "./contexts/FaceApiContext";
+
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
+    <FaceApiProvider>
+      <BrowserRouter>
+        <Routes>
         {/* Login padrão */}
         <Route path="/" element={<Login />} />
 
@@ -29,7 +32,8 @@ export default function App() {
 
         {/* ✅ Nova rota de Escala de Folgas */}
         <Route path="/escala-folgas" element={<EscalaFolgas funcionarios={[]} />} />
-      </Routes>
-    </BrowserRouter>
+          </Routes>
+      </BrowserRouter>
+    </FaceApiProvider>
   );
 }

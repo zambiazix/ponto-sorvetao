@@ -1,6 +1,6 @@
 // FuncionarioPerfil.jsx
 import { useParams, useNavigate } from "react-router-dom";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { auth, db } from "../services/firebase";
 import {
   collection,
@@ -61,9 +61,9 @@ import {
 // PDF libs
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import ConsentDialogs from "../components/ConsentDialogs"; // ajuste o path conforme sua estrutura
+import ConsentDialogs from "../components/ConsentDialogs";
+import { useFaceApi } from "../contexts/FaceApiContext";
 
-// NOTE: você já modularizou utils (recomendado). Estou usando esses imports:
 import { parseTimeToMinutes, minutesDiff, overlapMinutesWithWindow } from "../utils/timeUtils";
 import { computeMonthlyPayroll, formatDateToDDMM } from "../utils/payroll";
 
@@ -78,14 +78,6 @@ async function gerarEDepositarFaceDescriptor(lojaId, funcionarioId, fotoUrl) {
   try {
     console.log("🔍 Gerando descriptor facial para:", funcionarioId);
     if (!fotoUrl) throw new Error("Sem fotoReferencia disponível.");
-
-    // Garante modelos carregados
-    const MODEL_URL = "/models";
-    await Promise.all([
-      faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
-      faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-      faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-    ]);
 
     const img = await faceapi.fetchImage(fotoUrl);
     const detection = await faceapi
@@ -113,6 +105,194 @@ async function gerarEDepositarFaceDescriptor(lojaId, funcionarioId, fotoUrl) {
   }
 }
 
+// =====================================================
+// TimeField — input só numérico com formato HH:MM
+// =====================================================
+function TimeField({ label, value, onChange, ...props }) {
+  const handleChange = (e) => {
+    // Só aceita dígitos, máximo 4
+    const digits = e.target.value.replace(/\D/g, "").slice(0, 4);
+    let formatted = digits;
+    if (digits.length > 2) {
+      const mm = digits.slice(-2);
+      const hh = digits.slice(0, digits.length - 2);
+      formatted = `${hh}:${mm}`;
+    }
+    onChange(formatted);
+  };
+
+  const handleBlur = () => {
+    const digits = String(value || "").replace(/\D/g, "");
+    if (!digits) {
+      onChange("");
+      return;
+    }
+    let hh, mm;
+    if (digits.length <= 2) {
+      hh = parseInt(digits, 10) || 0;
+      mm = 0;
+    } else {
+      mm = parseInt(digits.slice(-2), 10) || 0;
+      hh = parseInt(digits.slice(0, digits.length - 2), 10) || 0;
+    }
+    hh = Math.min(Math.max(hh, 0), 23);
+    mm = Math.min(Math.max(mm, 0), 59);
+    onChange(`${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`);
+  };
+
+  return (
+    <TextField
+      label={label}
+      value={value || ""}
+      onChange={handleChange}
+      onBlur={handleBlur}
+      placeholder="HH:MM"
+      inputProps={{
+        inputMode: "numeric",
+        pattern: "[0-9]*",
+        maxLength: 5,
+        style: { textAlign: "center", fontSize: 16 },
+      }}
+      fullWidth
+      {...props}
+    />
+  );
+}
+
+// =====================================================
+// EditPontoDialog — modal isolado (não re-renderiza a página)
+// =====================================================
+function EditPontoDialog({ open, onClose, dayId, initialValues, onSave, STATUS_OPTIONS }) {
+  const [values, setValues] = useState(initialValues || { entrada: "", intervaloSaida: "", intervaloVolta: "", saida: "", status: "OK" });
+
+  useEffect(() => {
+    if (open) {
+      setValues(initialValues || { entrada: "", intervaloSaida: "", intervaloVolta: "", saida: "", status: "OK" });
+    }
+  }, [open, initialValues]);
+
+  const set = (k, v) => setValues((prev) => ({ ...prev, [k]: v }));
+
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
+      <DialogTitle sx={{ textTransform: "uppercase", fontWeight: "bold" }}>
+        EDITAR PONTO — {dayId}
+      </DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ mt: 1 }}>
+          <TimeField label="ENTRADA (HH:MM)" value={values.entrada} onChange={(v) => set("entrada", v)} />
+          <TimeField label="SAÍDA INTERVALO (HH:MM)" value={values.intervaloSaida} onChange={(v) => set("intervaloSaida", v)} />
+          <TimeField label="VOLTA INTERVALO (HH:MM)" value={values.intervaloVolta} onChange={(v) => set("intervaloVolta", v)} />
+          <TimeField label="SAÍDA (HH:MM)" value={values.saida} onChange={(v) => set("saida", v)} />
+          <FormControl fullWidth>
+            <InputLabel id="edit-status-label">STATUS</InputLabel>
+            <Select
+              labelId="edit-status-label"
+              value={values.status}
+              label="STATUS"
+              onChange={(e) => set("status", e.target.value)}
+            >
+              {STATUS_OPTIONS.map((s) => (
+                <MenuItem key={s} value={s} sx={{ textTransform: "uppercase" }}>
+                  {s}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <Typography variant="caption" color="#bbb">
+            DEIXE CAMPOS VAZIOS PARA REMOVÊ-LOS.
+          </Typography>
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} color="inherit">CANCELAR</Button>
+        <Button onClick={() => onSave(values)} variant="contained">SALVAR ALTERAÇÕES</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+// =====================================================
+// ManualPointDialog — modal isolado com o mesmo padrão
+// =====================================================
+function ManualPointDialog({ open, onClose, monthKey, onSave, STATUS_OPTIONS }) {
+  const [day, setDay] = useState("");
+  const [values, setValues] = useState({
+    entrada: "",
+    intervaloSaida: "",
+    intervaloVolta: "",
+    saida: "",
+    status: "OK",
+  });
+
+  useEffect(() => {
+    if (open) {
+      setDay("");
+      setValues({ entrada: "", intervaloSaida: "", intervaloVolta: "", saida: "", status: "OK" });
+    }
+  }, [open, monthKey]);
+
+  const dayOptions = useMemo(() => {
+    if (!monthKey) return [];
+    const [y, m] = monthKey.split("-").map(Number);
+    const total = new Date(y, m, 0).getDate();
+    return Array.from({ length: total }, (_, i) => {
+      const d = i + 1;
+      const iso = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+      return { iso, label: String(d) };
+    });
+  }, [monthKey]);
+
+  const isOK = values.status === "OK";
+  const set = (k, v) => setValues((prev) => ({ ...prev, [k]: v }));
+
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
+      <DialogTitle sx={{ textTransform: "uppercase", fontWeight: "bold" }}>
+        ADICIONAR PONTO MANUAL
+      </DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ mt: 1 }}>
+          <TextField
+            select
+            label="DIA"
+            value={day}
+            onChange={(e) => setDay(e.target.value)}
+            fullWidth
+          >
+            {dayOptions.map(({ iso, label }) => (
+              <MenuItem key={iso} value={iso}>{label}</MenuItem>
+            ))}
+          </TextField>
+          <TimeField label="ENTRADA (HH:MM)" value={values.entrada} onChange={(v) => set("entrada", v)} disabled={!isOK} />
+          <TimeField label="SAÍDA INTERVALO (HH:MM)" value={values.intervaloSaida} onChange={(v) => set("intervaloSaida", v)} disabled={!isOK} />
+          <TimeField label="VOLTA INTERVALO (HH:MM)" value={values.intervaloVolta} onChange={(v) => set("intervaloVolta", v)} disabled={!isOK} />
+          <TimeField label="SAÍDA (HH:MM)" value={values.saida} onChange={(v) => set("saida", v)} disabled={!isOK} />
+          <FormControl fullWidth>
+            <InputLabel id="manual-status-label">STATUS</InputLabel>
+            <Select
+              labelId="manual-status-label"
+              value={values.status}
+              label="STATUS"
+              onChange={(e) => set("status", e.target.value)}
+            >
+              {STATUS_OPTIONS.map((s) => (
+                <MenuItem key={s} value={s} sx={{ textTransform: "uppercase" }}>
+                  {s}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} color="inherit">CANCELAR</Button>
+        <Button onClick={() => onSave({ day, ...values })} variant="contained">SALVAR</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 export default function FuncionarioPerfil() {
   const { lojaId, funcionarioId } = useParams();
   const navigate = useNavigate();
@@ -135,28 +315,15 @@ export default function FuncionarioPerfil() {
   const [botaoBloqueado, setBotaoBloqueado] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editDayId, setEditDayId] = useState(null);
-  const [selectedMonth, setSelectedMonth] = useState(null);
-  const [editValues, setEditValues] = useState({
-    entrada: "",
-    intervaloSaida: "",
-    intervaloVolta: "",
-    saida: "",
-    status: "OK",
-  });
   // === PONTO MANUAL (ADMIN / GERENTE) ===
-const [openManualPointModal, setOpenManualPointModal] = useState(false);
-const [manualPointMonth, setManualPointMonth] = useState(null);
-const [manualPointDay, setManualPointDay] = useState("");
-const [manualPointData, setManualPointData] = useState({
-  entrada: "",
-  intervaloSaida: "",
-  intervaloVolta: "",
-  saida: "",
-  status: "OK",
-});
+  const [openManualPointModal, setOpenManualPointModal] = useState(false);
+  const [manualPointMonth, setManualPointMonth] = useState(null);
 
   const STATUS_OPTIONS = ["OK", "FOLGA", "ATESTADO", "FALTA", "FÉRIAS", "SUSPENSÃO", "DISPENSA"];
   const cameraStreamRef = useRef(null);
+
+  // ✅ Pega os modelos e a câmera pré-aquecida do contexto global
+  const { modelsLoaded, getCameraStream } = useFaceApi();
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -193,19 +360,8 @@ const [manualPointData, setManualPointData] = useState({
       try {
         console.log("FUNC-PERF: inicializando modelos...");
 
-        await loadFaceApiModels();
-        const MODEL_URL = "/models";
-
-        if (!faceapi.nets.ssdMobilenetv1.params) {
-          console.log("FUNC-PERF: faceapi.nets não carregados — carregando via faceapi.loadFromUri...");
-          await Promise.all([
-            faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
-            faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-            faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-          ]);
-        }
-
-        console.log("FUNC-PERF: modelos carregados com sucesso.");
+        // ✅ Modelos já carregados globalmente pelo FaceApiContext
+        console.log("FUNC-PERF: usando modelos do contexto global");
 
         // ✅ Só carrega os dados se lojaId e funcionarioId existirem
         if (lojaId && funcionarioId) {
@@ -317,9 +473,9 @@ const [manualPointData, setManualPointData] = useState({
     }
   };
 
-  const carregarPontos = async () => {
+  const carregarPontos = async (silent = false) => {
+    if (!silent) setCarregando(true);
     try {
-      setCarregando(true);
       const snap = await getDocs(
         collection(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos")
       );
@@ -331,7 +487,7 @@ const [manualPointData, setManualPointData] = useState({
     } catch (err) {
       console.error("FUNC-PERF: Erro carregarPontos:", err);
     } finally {
-      setCarregando(false);
+      if (!silent) setCarregando(false);
     }
   };
 
@@ -450,9 +606,16 @@ const [manualPointData, setManualPointData] = useState({
         dados.saida = horaAtual;
       }
 
-      await setDoc(docRef, dados, { merge: true });
+      // ✅ Update local imediato
+      setPontos((prev) => {
+        const exists = prev.find((p) => p.id === targetDayId);
+        if (exists) {
+          return prev.map((p) => (p.id === targetDayId ? { ...p, ...dados } : p));
+        }
+        return [{ id: targetDayId, ...dados }, ...prev].sort((a, b) => b.id.localeCompare(a.id));
+      });
 
-      await carregarPontos();
+      await setDoc(docRef, dados, { merge: true });
 
       alert(isNightExit ? "✅ Saída registrada no dia anterior!" : "✅ Ponto registrado com sucesso!");
 
@@ -483,14 +646,9 @@ const [manualPointData, setManualPointData] = useState({
     let video = null;
 
     try {
-      // 🔥 Pré-aquecimento
-      try {
-        const warm = await navigator.mediaDevices.getUserMedia({ video: true });
-        warm.getTracks().forEach((t) => t.stop());
-      } catch {}
-
-      console.log("📸 Abrindo camera...");
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+      // 🔥 Usa o stream PRÉ-AQUECIDO do contexto global (abre instantâneo)
+      console.log("📸 Abrindo camera (pré-aquecida)...");
+      stream = await getCameraStream();
 
       // 🔥 Elemento de vídeo REAL
       video = document.createElement("video");
@@ -498,6 +656,8 @@ const [manualPointData, setManualPointData] = useState({
       video.playsInline = true;
       video.muted = true;
 
+      video.width = 480;
+      video.height = 360;
       Object.assign(video.style, {
         position: "fixed",
         top: "50%",
@@ -509,6 +669,7 @@ const [manualPointData, setManualPointData] = useState({
         zIndex: 99999,
         border: "2px solid white",
         borderRadius: "10px",
+        objectFit: "cover",
       });
 
       video.srcObject = stream;
@@ -530,13 +691,16 @@ const [manualPointData, setManualPointData] = useState({
 
       console.log("📸 Camera pronta.");
 
-      // 🔥 Loop de reconhecimento
+      // 🔥 Loop de reconhecimento (TinyFaceDetector = 3x mais rápido)
       const start = Date.now();
       let matched = false;
 
       while (Date.now() - start < attemptsTimeout && !matched) {
         const det = await faceapi
-          .detectSingleFace(video, new faceapi.SsdMobilenetv1Options())
+          .detectSingleFace(
+            video,
+            new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 })
+          )
           .withFaceLandmarks()
           .withFaceDescriptor();
 
@@ -561,14 +725,13 @@ const [manualPointData, setManualPointData] = useState({
       console.error("❌ ERRO NO RECONHECIMENTO:", err);
       alert("Erro durante o reconhecimento facial.");
     } finally {
-      // Cleanup REAL
+      // Cleanup — só remove o <video>, NÃO para o stream (mantém pré-aquecido)
       try {
-        if (stream) stream.getTracks().forEach((t) => t.stop());
         if (video && video.parentNode) video.remove();
       } catch {}
 
       setReconhecimentoEmAndamento(false);
-      console.log("🔚 Camera fechada.");
+      console.log("🔚 Câmera liberada (stream mantido no contexto).");
     }
   };
   // botão chama esta função
@@ -612,27 +775,16 @@ const [manualPointData, setManualPointData] = useState({
 
 const openAddManualPointModal = (monthObj) => {
   setManualPointMonth(monthObj);
-  setManualPointDay("");
-  setManualPointData({
-    entrada: "",
-    intervaloSaida: "",
-    intervaloVolta: "",
-    saida: "",
-    status: "OK",
-  });
   setOpenManualPointModal(true);
 };
 
-const salvarPontoManual = async () => {
-  if (!manualPointDay) {
+const salvarPontoManual = async ({ day, entrada, intervaloSaida, intervaloVolta, saida, status }) => {
+  if (!day) {
     alert("Selecione o dia.");
     return;
   }
 
-  const existing = (manualPointMonth?.days || []).find(
-    (d) => d.id === manualPointDay
-  );
-
+  const existing = pontos.find((p) => p.id === day);
   if (existing) {
     const confirmar = window.confirm(
       "Já existe um ponto registrado neste dia. Deseja REALMENTE substituir?"
@@ -640,97 +792,141 @@ const salvarPontoManual = async () => {
     if (!confirmar) return;
   }
 
-  try {
-    await setDoc(
-      doc(
-        db,
-        "lojas",
-        lojaId,
-        "funcionarios",
-        funcionarioId,
-        "pontos",
-        manualPointDay
-      ),
-      {
-        ...manualPointData,
-        manual: true,
-        createdBy: isAdmin ? "ADMIN" : "GERENTE",
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
+  const isOK = status === "OK";
+  const payload = {
+    entrada: isOK ? entrada || null : null,
+    intervaloSaida: isOK ? intervaloSaida || null : null,
+    intervaloVolta: isOK ? intervaloVolta || null : null,
+    saida: isOK ? saida || null : null,
+    status,
+    manual: true,
+    createdBy: isAdmin ? "ADMIN" : "GERENTE",
+  };
 
-    await carregarPontos();
-    setOpenManualPointModal(false);
+  // ✅ Update otimista
+  setPontos((prev) => {
+    const exists = prev.find((p) => p.id === day);
+    if (exists) {
+      return prev.map((p) => {
+        if (p.id !== day) return p;
+        const next = { ...p };
+        Object.entries(payload).forEach(([k, v]) => {
+          if (v === null) delete next[k];
+          else next[k] = v;
+        });
+        return next;
+      });
+    }
+    const newEntry = { id: day };
+    Object.entries(payload).forEach(([k, v]) => {
+      if (v !== null) newEntry[k] = v;
+    });
+    return [newEntry, ...prev].sort((a, b) => b.id.localeCompare(a.id));
+  });
+
+  setOpenManualPointModal(false);
+
+  try {
+    const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", day);
+    const snap = await getDoc(docRef);
+    const existingData = snap.exists() ? snap.data() : {};
+    const next = { ...existingData, ...payload, updatedAt: serverTimestamp() };
+    ["entrada", "intervaloSaida", "intervaloVolta", "saida"].forEach((k) => {
+      if (next[k] === null) delete next[k];
+    });
+    await setDoc(docRef, next, { merge: true });
   } catch (err) {
-    console.error(err);
-    alert("Erro ao salvar ponto manual.");
+    console.error("Erro ao salvar ponto manual:", err);
+    alert("Erro ao salvar ponto manual. Recarregando...");
+    await carregarPontos(true);
   }
 };
 
   const handleExcluirPonto = async (dayId) => {
-    if (!temPermissao) return alert("Somente gerente ou admin pode ...");
+    if (!temPermissao) return alert("Somente gerente ou admin pode...");
     if (!window.confirm("Excluir este dia e todos os dados associados?")) return;
+
+    const backup = pontos.find((p) => p.id === dayId);
+    // ✅ Remove instantâneo
+    setPontos((prev) => prev.filter((p) => p.id !== dayId));
+
     try {
       await deleteDoc(doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId));
-      await carregarPontos();
-      alert("🗑️ Ponto excluído com sucesso!");
-    } catch {
+    } catch (err) {
+      console.error("Erro ao excluir ponto:", err);
+      // Rollback
+      if (backup) {
+        setPontos((prev) => [...prev, backup].sort((a, b) => b.id.localeCompare(a.id)));
+      }
       alert("Erro ao excluir ponto.");
     }
   };
   // === EDIT MODAL HELPERS ===
   const openEditModal = (day) => {
-    if (!temPermissao) return alert("Somente gerente ou admin pode ...");
+    if (!temPermissao) return alert("Somente gerente ou admin pode...");
     setEditDayId(day.id);
-    setEditValues({
-      entrada: day.entrada || "",
-      intervaloSaida: day.intervaloSaida || "",
-      intervaloVolta: day.intervaloVolta || "",
-      saida: day.saida || "",
-      status: day.status || "OK",
-    });
     setEditOpen(true);
   };
 
   const closeEditModal = () => {
     setEditOpen(false);
     setEditDayId(null);
-    setEditValues({ entrada: "", intervaloSaida: "", intervaloVolta: "", saida: "", status: "OK" });
   };
 
-  const handleEditChange = (field, value) => {
-    setEditValues((s) => ({ ...s, [field]: value }));
-  };
+  const editInitialValues = useMemo(() => {
+    if (!editDayId) return { entrada: "", intervaloSaida: "", intervaloVolta: "", saida: "", status: "OK" };
+    const day = pontos.find((p) => p.id === editDayId);
+    if (!day) return { entrada: "", intervaloSaida: "", intervaloVolta: "", saida: "", status: "OK" };
+    return {
+      entrada: day.entrada || "",
+      intervaloSaida: day.intervaloSaida || "",
+      intervaloVolta: day.intervaloVolta || "",
+      saida: day.saida || "",
+      status: day.status || "OK",
+    };
+  }, [editDayId, pontos]);
 
-  const saveEdit = async () => {
-    if (!editDayId) return;
+  const saveEdit = async (values) => {
+    const dayId = editDayId;
+    if (!dayId) return;
+
+    const payload = {
+      entrada: values.entrada || null,
+      intervaloSaida: values.intervaloSaida || null,
+      intervaloVolta: values.intervaloVolta || null,
+      saida: values.saida || null,
+      status: values.status || "OK",
+    };
+
+    // ✅ Update otimista — instantâneo, sem reload
+    setPontos((prev) =>
+      prev.map((p) => {
+        if (p.id !== dayId) return p;
+        const next = { ...p };
+        Object.entries(payload).forEach(([k, v]) => {
+          if (v === null) delete next[k];
+          else next[k] = v;
+        });
+        return next;
+      })
+    );
+
+    closeEditModal();
+
+    // Sincroniza com Firestore em background
     try {
-      const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", editDayId);
-      // build payload: keep empty strings as removals
-      const payload = {
-        entrada: editValues.entrada || null,
-        intervaloSaida: editValues.intervaloSaida || null,
-        intervaloVolta: editValues.intervaloVolta || null,
-        saida: editValues.saida || null,
-        status: editValues.status || "OK",
-        atualizadoEm: serverTimestamp(),
-      };
-      // We'll use setDoc with merge true and post-process by removing keys if null (simple approach: fetch existing and set)
+      const docRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId, "pontos", dayId);
       const snap = await getDoc(docRef);
       const existing = snap.exists() ? snap.data() : {};
-      const next = { ...existing, ...payload };
-      // remove null fields
+      const next = { ...existing, ...payload, atualizadoEm: serverTimestamp() };
       ["entrada", "intervaloSaida", "intervaloVolta", "saida"].forEach((k) => {
         if (next[k] === null) delete next[k];
       });
       await setDoc(docRef, next, { merge: true });
-      await carregarPontos();
-      alert("Alterações salvas com sucesso!");
-      closeEditModal();
     } catch (err) {
       console.error("Erro ao salvar edição:", err);
-      alert("Erro ao salvar alterações. Veja console.");
+      alert("Erro ao salvar. Recarregando...");
+      await carregarPontos(true);
     }
   };
   // Admin helper: allow clearing a single timestamp
@@ -1405,6 +1601,10 @@ if (atestados.length > 0) {
     return s ? s.toLowerCase().replace(/\s+/g, "_").replace(/[^\w_-]/g, "") : "funcionario";
   }
 
+  const months = useMemo(() => groupByMonth(pontos), [pontos]);
+  const nowSP = new Date(new Date().toLocaleString("en-US", { timeZone: BRAZIL_TZ }));
+  const currentMonthKey = `${nowSP.getFullYear()}-${String(nowSP.getMonth() + 1).padStart(2, "0")}`;
+
   if (carregando)
     return (
       <Container
@@ -1419,10 +1619,6 @@ if (atestados.length > 0) {
         <CircularProgress color="inherit" />
       </Container>
     );
-
-  const months = groupByMonth(pontos);
-  const nowSP = new Date(new Date().toLocaleString("en-US", { timeZone: BRAZIL_TZ }));
-  const currentMonthKey = `${nowSP.getFullYear()}-${String(nowSP.getMonth() + 1).padStart(2, "0")}`;
 
   return (
     <Container sx={{ bgcolor: "#121212", minHeight: "100vh", py: 4, color: "white" }}>
@@ -1657,122 +1853,24 @@ if (atestados.length > 0) {
         ))}
       </Paper>
 
-      {/* EDIT DIALOG */}
-      <Dialog open={editOpen} onClose={closeEditModal} fullWidth maxWidth="sm">
-      
-        <DialogTitle>Editar Ponto - {editDayId}</DialogTitle>
-        <DialogContent>
-          <Stack spacing={2} sx={{ mt: 1 }}>
-            <TextField label="Entrada (HH:MM)" value={editValues.entrada} onChange={(e) => handleEditChange("entrada", e.target.value)} placeholder="08:00" fullWidth />
-            <TextField label="Saída Intervalo (HH:MM)" value={editValues.intervaloSaida} onChange={(e) => handleEditChange("intervaloSaida", e.target.value)} placeholder="12:00" fullWidth />
-            <TextField label="Volta Intervalo (HH:MM)" value={editValues.intervaloVolta} onChange={(e) => handleEditChange("intervaloVolta", e.target.value)} placeholder="13:00" fullWidth />
-            <TextField label="Saída (HH:MM)" value={editValues.saida} onChange={(e) => handleEditChange("saida", e.target.value)} placeholder="17:00" fullWidth />
-            <FormControl fullWidth>
-              <InputLabel id="status-label">Status</InputLabel>
-              <Select labelId="status-label" value={editValues.status} label="Status" onChange={(e) => handleEditChange("status", e.target.value)}>
-                {STATUS_OPTIONS.map((s) => (
-                  <MenuItem key={s} value={s}>
-                    {s}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <Typography variant="caption" color="#bbb">
-              Deixe campos vazios para removê-los.
-            </Typography>
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={closeEditModal} color="inherit">
-            Cancelar
-          </Button>
-          <Button onClick={saveEdit} variant="contained">
-            Salvar alterações
-          </Button>
-        </DialogActions>
-      </Dialog>
-      <Dialog open={openManualPointModal} onClose={() => setOpenManualPointModal(false)} maxWidth="sm" fullWidth>
-  <DialogTitle>Adicionar ponto manual</DialogTitle>
+      {/* EDIT DIALOG (isolado — não re-renderiza a página) */}
+      <EditPontoDialog
+        open={editOpen}
+        onClose={closeEditModal}
+        dayId={editDayId}
+        initialValues={editInitialValues}
+        onSave={saveEdit}
+        STATUS_OPTIONS={STATUS_OPTIONS}
+      />
 
-  <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-    <TextField
-      select
-      label="Dia"
-      value={manualPointDay}
-      onChange={(e) => setManualPointDay(e.target.value)}
-    >
-      {manualPointMonth &&
-        Array.from(
-          { length: new Date(
-            Number(manualPointMonth.monthKey.split("-")[0]),
-            Number(manualPointMonth.monthKey.split("-")[1]),
-            0
-          ).getDate() },
-          (_, i) => {
-            const day = i + 1;
-            const [y, m] = manualPointMonth.monthKey.split("-");
-            const iso = `${y}-${m}-${String(day).padStart(2, "0")}`;
-            return (
-              <MenuItem key={iso} value={iso}>
-                {day}
-              </MenuItem>
-            );
-          }
-        )}
-    </TextField>
-
-    <TextField
-      label="Entrada"
-      value={manualPointData.entrada}
-      disabled={manualPointData.status !== "OK"}
-      onChange={(e) => setManualPointData({ ...manualPointData, entrada: e.target.value })}
-    />
-
-    <TextField
-      label="Saída intervalo"
-      value={manualPointData.intervaloSaida}
-      disabled={manualPointData.status !== "OK"}
-      onChange={(e) =>
-        setManualPointData({ ...manualPointData, intervaloSaida: e.target.value })
-      }
-    />
-
-    <TextField
-      label="Volta intervalo"
-      value={manualPointData.intervaloVolta}
-      disabled={manualPointData.status !== "OK"}
-      onChange={(e) =>
-        setManualPointData({ ...manualPointData, intervaloVolta: e.target.value })
-      }
-    />
-
-    <TextField
-      label="Saída"
-      value={manualPointData.saida}
-      disabled={manualPointData.status !== "OK"}
-      onChange={(e) => setManualPointData({ ...manualPointData, saida: e.target.value })}
-    />
-
-    <TextField
-      select
-      label="Status"
-      value={manualPointData.status}
-      onChange={(e) => setManualPointData({ ...manualPointData, status: e.target.value })}
-    >
-      <MenuItem value="OK">OK</MenuItem>
-      <MenuItem value="Atestado">Atestado</MenuItem>
-      <MenuItem value="Falta">Falta</MenuItem>
-      <MenuItem value="Folga">Folga</MenuItem>
-    </TextField>
-  </DialogContent>
-
-  <DialogActions>
-    <Button onClick={() => setOpenManualPointModal(false)}>Cancelar</Button>
-    <Button variant="contained" onClick={salvarPontoManual}>
-      Salvar
-    </Button>
-  </DialogActions>
-</Dialog>
+      {/* MANUAL POINT DIALOG (isolado) */}
+      <ManualPointDialog
+        open={openManualPointModal}
+        onClose={() => setOpenManualPointModal(false)}
+        monthKey={manualPointMonth?.monthKey}
+        onSave={salvarPontoManual}
+        STATUS_OPTIONS={STATUS_OPTIONS}
+      />
 
     </Container>
   );
