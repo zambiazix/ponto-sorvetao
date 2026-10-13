@@ -41,6 +41,7 @@ import ConsentDialogs from "../components/ConsentDialogs";
 import PontoRapido from "../components/PontoRapido";
 import { useFaceApi } from "../contexts/FaceApiContext";
 import FaceRetouchingNaturalIcon from "@mui/icons-material/FaceRetouchingNatural";
+import Inventory2Icon from "@mui/icons-material/Inventory2";
 
 const ADMIN_UID = "mD3ie8YGmgaup2VVDpKuMBltXgp2";
 const BRAZIL_TZ = "America/Sao_Paulo";
@@ -462,18 +463,31 @@ const proceedWithFacialRecognition = async (funcId, nomeFuncionario) => {
           </Box>
         </Paper>
       )}
-      {/* 🕐 BOTÃO BATER PONTO RÁPIDO */}
-      <Button
-        variant="contained"
-        color="success"
-        size="large"
-        fullWidth
-        startIcon={<FaceRetouchingNaturalIcon />}
-        onClick={() => setPontoRapidoOpen(true)}
-        sx={{ mb: 2, py: 1.5, fontSize: "1.1rem" }}
-      >
-        🕐 Bater Ponto Rápido
-      </Button>
+      {/* 🕐 BATER PONTO + 📦 ESTOQUE */}
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mb: 2 }}>
+        <Button
+          variant="contained"
+          color="success"
+          size="large"
+          fullWidth
+          startIcon={<FaceRetouchingNaturalIcon />}
+          onClick={() => setPontoRapidoOpen(true)}
+          sx={{ py: 1.5, fontSize: "1.1rem" }}
+        >
+          🕐 Bater Ponto Rápido
+        </Button>
+        <Button
+          variant="contained"
+          color="primary"
+          size="large"
+          fullWidth
+          startIcon={<Inventory2Icon />}
+          onClick={() => navigate(`/loja/${lojaId}/estoque`)}
+          sx={{ py: 1.5, fontSize: "1.1rem" }}
+        >
+          📦 Estoque
+        </Button>
+      </Stack>
 
       <PontoRapido
         open={pontoRapidoOpen}

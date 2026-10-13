@@ -3,7 +3,8 @@ import Login from "./pages/Login";
 import Painel from "./pages/Painel";
 import FuncionarioPerfil from "./pages/FuncionarioPerfil";
 import AdminPainel from "./pages/AdminPainel";
-import EscalaFolgas from "./pages/EscalaFolgas"; // ✅ Importa o componente novo
+import EscalaFolgas from "./pages/EscalaFolgas";
+import Estoque from "./pages/Estoque";
 
 import { FaceApiProvider } from "./contexts/FaceApiContext";
 
@@ -32,6 +33,10 @@ export default function App() {
 
         {/* ✅ Nova rota de Escala de Folgas */}
         <Route path="/escala-folgas" element={<EscalaFolgas funcionarios={[]} />} />
+
+        {/* 📦 Estoque (funciona pra loja e admin) */}
+        <Route path="/loja/:lojaId/estoque" element={<Estoque />} />
+        <Route path="/admin/loja/:lojaId/estoque" element={<Estoque />} />
           </Routes>
       </BrowserRouter>
     </FaceApiProvider>
