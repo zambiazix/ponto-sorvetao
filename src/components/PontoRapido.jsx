@@ -8,9 +8,10 @@ import * as faceapi from "@vladmandic/face-api";
 import { db } from "../services/firebase";
 import { doc, getDoc, setDoc, collection, getDocs, serverTimestamp } from "firebase/firestore";
 import { useFaceApi } from "../contexts/FaceApiContext";
+import PunchSuccessDialog from "./PunchSuccessDialog";
 
 const BRAZIL_TZ = "America/Sao_Paulo";
-const MATCH_THRESHOLD = 0.5;
+const MATCH_THRESHOLD = 0.6;
 const DETECTION_INTERVAL = 600; // ms entre detecções
 const MAX_ATTEMPTS = 20; // ~12 segundos
 
@@ -41,6 +42,8 @@ export default function PontoRapido({ open, onClose, lojaId, funcionarios }) {
   const [status, setStatus] = useState("idle"); // idle | loading | detecting | success | error
   const [mensagem, setMensagem] = useState("");
   const [funcionarioReconhecido, setFuncionarioReconhecido] = useState(null);
+  const [successOpen, setSuccessOpen] = useState(false);
+  const [successData, setSuccessData] = useState({ nome: "", tipo: "", hora: "", foto: "" });
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const cancelRef = useRef(false);
@@ -50,15 +53,35 @@ export default function PontoRapido({ open, onClose, lojaId, funcionarios }) {
     const descritores = [];
     for (const func of funcionarios) {
       try {
-        const snap = await getDoc(doc(db, "lojas", lojaId, "funcionarios", func.id));
+        const docRef = doc(db, "lojas", lojaId, "funcionarios", func.id);
+        const snap = await getDoc(docRef);
         if (!snap.exists()) continue;
         const data = snap.data();
-        if (data.faceDescriptor && Array.isArray(data.faceDescriptor) && data.faceDescriptor.length === 128) {
+        
+        let descriptorFinal = data.faceDescriptor;
+
+        // 🔥 SE TEM FOTO MAS NÃO TEM O MAPA DO ROSTO, GERA AGORA MESMO
+        if ((!descriptorFinal || !Array.isArray(descriptorFinal)) && data.fotoReferencia) {
+          console.log(`⚙️ Gerando molde facial automático para ${func.nome}...`);
+          try {
+            const img = await faceapi.fetchImage(data.fotoReferencia);
+            const detection = await faceapi.detectSingleFace(img).withFaceLandmarks().withFaceDescriptor();
+            if (detection && detection.descriptor) {
+              descriptorFinal = Array.from(detection.descriptor);
+              // Salva no banco pra não precisar fazer isso de novo
+              await setDoc(docRef, { faceDescriptor: descriptorFinal }, { merge: true });
+            }
+          } catch (e) {
+            console.warn(`Erro ao gerar molde para ${func.nome}:`, e);
+          }
+        }
+
+        if (descriptorFinal && Array.isArray(descriptorFinal) && descriptorFinal.length === 128) {
           descritores.push({
             id: func.id,
             nome: func.nome,
             foto: data.fotoReferencia || null,
-            descriptor: new Float32Array(data.faceDescriptor),
+            descriptor: new Float32Array(descriptorFinal),
           });
         }
       } catch (err) {
@@ -110,9 +133,21 @@ export default function PontoRapido({ open, onClose, lojaId, funcionarios }) {
 
       await setDoc(docRef, dados, { merge: true });
 
+      // 🔍 Descobre qual tipo de batida foi
+      let tipoLabel = "Ponto registrado";
+      if (isNightExit) tipoLabel = "Saída (madrugada)";
+      else if (dados.entrada === horaAtual) tipoLabel = "Entrada";
+      else if (dados.intervaloSaida === horaAtual) tipoLabel = "Saída intervalo";
+      else if (dados.intervaloVolta === horaAtual) tipoLabel = "Volta intervalo";
+      else if (dados.saida === horaAtual) tipoLabel = "Saída";
+
       setFuncionarioReconhecido({ nome: funcNome, foto: null });
       setStatus("success");
-      setMensagem(`✅ Ponto registrado para ${funcNome}!`);
+      setMensagem(`Ponto registrado!`);
+
+      // 🔥 Abre o alerta bonito
+      setSuccessData({ nome: funcNome, tipo: tipoLabel, hora: horaAtual, foto: "" });
+      setSuccessOpen(true);
     } catch (err) {
       console.error("Erro ao bater ponto:", err);
       setStatus("error");
@@ -304,6 +339,18 @@ export default function PontoRapido({ open, onClose, lojaId, funcionarios }) {
           Fechar
         </Button>
       </DialogActions>
+
+      <PunchSuccessDialog
+        open={successOpen}
+        onClose={() => {
+          setSuccessOpen(false);
+          handleClose();
+        }}
+        nome={successData.nome}
+        tipo={successData.tipo}
+        hora={successData.hora}
+        foto={successData.foto}
+      />
     </Dialog>
   );
 }

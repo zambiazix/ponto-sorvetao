@@ -20,6 +20,7 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import Inventory2Icon from "@mui/icons-material/Inventory2";
 import FolderIcon from "@mui/icons-material/Folder";
 import SearchIcon from "@mui/icons-material/Search";
+import BarChartIcon from "@mui/icons-material/BarChart";
 import ClearIcon from "@mui/icons-material/Clear";
 import SwapHorizIcon from "@mui/icons-material/SwapHoriz";
 import DownloadIcon from "@mui/icons-material/Download";
@@ -99,6 +100,21 @@ export default function Estoque() {
       } catch (e) { console.error(e); }
     })();
   }, [lojaId]);
+
+  // ============ GUARD: só admin/gerente ============
+  useEffect(() => {
+    if (temPermissao === false && !isAdmin && !isGerente) {
+      // pequena espera pra auth carregar
+    }
+    // Se já sabemos que NÃO é admin nem gerente E o auth já checou:
+    const timer = setTimeout(() => {
+      if (!isAdmin && !isGerente && auth.currentUser) {
+        alert("Acesso restrito a gerentes e administradores.");
+        navigate(lojaId ? `/loja/${lojaId}/painel` : "/");
+      }
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, [isAdmin, isGerente, lojaId, navigate]);
 
   // ============ CATEGORIAS ============
   const carregarCategorias = useCallback(async () => {
@@ -534,6 +550,20 @@ export default function Estoque() {
         </Box>
       </Stack>
 
+      {/* BOTÃO RELATÓRIOS */}
+      {temPermissao && (
+        <Button
+          fullWidth
+          variant="outlined"
+          color="info"
+          startIcon={<BarChartIcon />}
+          onClick={() => navigate(`/loja/${lojaId}/estoque/relatorios`)}
+          sx={{ mb: 2, py: 1.2, textTransform: "uppercase", fontWeight: "bold" }}
+        >
+          📊 Ver Relatórios e Gráficos
+        </Button>
+      )}
+
       {/* BUSCA */}
       <TextField
         value={busca}
@@ -592,7 +622,7 @@ export default function Estoque() {
       >
         <Typography variant="h6" sx={{ textTransform: "capitalize" }}>{tituloNivel}</Typography>
         {temPermissao && (
-          <Stack direction="row" spacing={1}>
+          <Stack direction="row" spacing={1} flexWrap="wrap">
             {nivel === "produtos" && (
               <Button
                 variant="outlined"

@@ -63,6 +63,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import ConsentDialogs from "../components/ConsentDialogs";
 import { useFaceApi } from "../contexts/FaceApiContext";
+import { estaDentroDaLoja, preAquecerLocalizacao, getExigirGPS } from "../utils/geoUtils";
 
 import { parseTimeToMinutes, minutesDiff, overlapMinutesWithWindow } from "../utils/timeUtils";
 import { computeMonthlyPayroll, formatDateToDDMM } from "../utils/payroll";
@@ -382,7 +383,7 @@ export default function FuncionarioPerfil() {
     carregarTudo();
   }, []);
 
-  // Pré-carrega permissão da câmera
+  // Pré-carrega permissão da câmera + GPS
   useEffect(() => {
     navigator.mediaDevices
       .getUserMedia({ video: true })
@@ -393,6 +394,8 @@ export default function FuncionarioPerfil() {
       .catch(() => {
         console.warn("⚠️ Usuário negou a permissão de câmera antecipadamente.");
       });
+    // 🔥 Pré-aquece GPS silenciosamente
+    preAquecerLocalizacao();
   }, []);
 
   const loadRegionaisFromStorage = () => {
@@ -708,7 +711,7 @@ export default function FuncionarioPerfil() {
           const distance = faceapi.euclideanDistance(storedDesc, det.descriptor);
           console.log("DIST:", distance);
 
-          if (distance < 0.45) {
+          if (distance < 0.55) {
             matched = true;
             console.log("🎉 Rosto reconhecido! Marcando ponto...");
             await onVerifyPunchSuccess();
@@ -739,6 +742,20 @@ export default function FuncionarioPerfil() {
     if (!funcData) {
       alert("Dados do funcionário ainda não carregados. Aguarde um pouco.");
       return;
+    }
+    // 🔥 Verifica se a loja exige GPS
+    const precisa = await getExigirGPS(lojaId);
+    if (precisa) {
+      const check = await estaDentroDaLoja();
+      if (!check.ok) {
+        const msg = check.erro
+          ? `❌ ${check.erro}`
+          : `⚠️ Você precisa estar a até ${check.raio}m da loja.\n\n` +
+            `📍 Local: ${check.endereco}\n` +
+            `📏 Você está a ${check.distancia}m (precisão ±${check.precisao}m).`;
+        alert(msg);
+        return;
+      }
     }
     await performLiveRecognitionAndPunch({ attemptsTimeout: 9000, intervalMs: 900 });
   };
@@ -1569,20 +1586,35 @@ if (atestados.length > 0) {
       setUploading(true);
 
       // 1) Envia para o Cloudinary
-      const imageUrl = await uploadImage(file); // sua função services/cloudinary.js
+      const imageUrl = await uploadImage(file);
 
-      // 2) Atualiza o documento NO MESMO PATH que você usa para ler
+      // 🔥 2) GERA O DESCRIPTOR DO ROSTO AGORA MESMO
+      const img = await faceapi.fetchImage(imageUrl);
+      const detection = await faceapi.detectSingleFace(img).withFaceLandmarks().withFaceDescriptor();
+
+      if (!detection) {
+        alert("⚠️ Nenhum rosto detectado na imagem! Tente uma foto mais clara e de frente.");
+        setUploading(false);
+        return;
+      }
+
+      const descriptorArray = Array.from(detection.descriptor);
       const funcionarioRef = doc(db, "lojas", lojaId, "funcionarios", funcionarioId);
-      // Use setDoc merge/update para não sobrescrever campos importantes
-      await updateDoc(funcionarioRef, { fotoReferencia: imageUrl, updatedAt: new Date().toISOString() });
 
-      // 3) Atualiza estados locais para refletir mudança imediatamente
+      // 3) Salva foto E descriptor juntos
+      await updateDoc(funcionarioRef, { 
+        fotoReferencia: imageUrl, 
+        faceDescriptor: descriptorArray, // <--- AQUI A MÁGICA
+        updatedAt: new Date().toISOString() 
+      });
+
+      // 4) Atualiza a tela na hora
       setFotoPreview(imageUrl);
-      setFuncData((prev) => ({ ...(prev || {}), fotoReferencia: imageUrl }));
+      setFuncData((prev) => ({ ...(prev || {}), fotoReferencia: imageUrl, faceDescriptor: descriptorArray }));
       setFuncionario((prev) => ({ ...(prev || {}), fotoReferencia: imageUrl }));
 
-      console.log("✅ Foto atualizada com sucesso:", imageUrl);
-      alert("✅ Foto atualizada com sucesso!");
+      console.log("✅ Foto e rosto atualizados com sucesso:", imageUrl);
+      alert("✅ Foto e reconhecimento facial atualizados com sucesso! Já pode testar.");
     } catch (error) {
       console.error("Erro ao enviar foto:", error);
       alert("Erro ao enviar a foto. Veja console.");
@@ -1603,7 +1635,24 @@ if (atestados.length > 0) {
 
   const months = useMemo(() => groupByMonth(pontos), [pontos]);
   const nowSP = new Date(new Date().toLocaleString("en-US", { timeZone: BRAZIL_TZ }));
-  const currentMonthKey = `${nowSP.getFullYear()}-${String(nowSP.getMonth() + 1).padStart(2, "0")}`;
+  const currentYear = String(nowSP.getFullYear());
+  const currentMonthKey = `${currentYear}-${String(nowSP.getMonth() + 1).padStart(2, "0")}`;
+
+  // 🔥 AGRUPAMENTO POR ANO
+  const years = useMemo(() => {
+    const map = new Map();
+    months.forEach((m) => {
+      const year = m.monthKey.split("-")[0];
+      if (!map.has(year)) {
+        map.set(year, { year, months: [], totalMinutes: 0 });
+      }
+      const entry = map.get(year);
+      entry.months.push(m);
+      entry.totalMinutes += m.totalMinutes;
+    });
+    // Ordena os anos do mais recente para o mais antigo
+    return Array.from(map.values()).sort((a, b) => b.year.localeCompare(a.year));
+  }, [months]);
 
   if (carregando)
     return (
@@ -1755,99 +1804,140 @@ if (atestados.length > 0) {
           📝 Histórico de Ponto
         </Typography>
 
-        {months.map((month) => (
-          <Accordion key={month.monthKey} defaultExpanded={month.monthKey === currentMonthKey} sx={{ bgcolor: "#1a1a1a", color: "white", mb: 1 }}>
-            <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: "#fff" }} />}>
-              <Box sx={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2 }}>
-                <Typography sx={{ textTransform: "capitalize" }}>{month.label} — ⏱️ {minutesToHHMM(month.totalMinutes)}</Typography>
-                {(isAdmin || isGerente) && (
-  <Button
-    size="small"
-    variant="outlined"
-    sx={{ ml: 2 }}
-    onClick={(e) => {
-      e.stopPropagation(); // MUITO IMPORTANTE
-      openAddManualPointModal(month);
-    }}
-  >
-    + Ponto Manual
-  </Button>
-)}
-
-                {(isAdmin || isGerente) ? (
-                  <Stack direction="row" spacing={1}>
-                    <Button variant="outlined" size="small" onClick={() => gerarRelatorio(month)}>
-                      Gerar Relatório
-                    </Button>
-                    <Button variant="contained" color="success" size="small" onClick={() => gerarContraChequePdf(month, 1660.63)}>
-                      Gerar Contra-Cheque
-                    </Button>
-                  </Stack>
-                ) : (
-                  <Button variant="outlined" size="small" disabled>
-                    Gerar Relatório
-                  </Button>
-                )}
+        {years.map((yearObj) => (
+          <Accordion
+            key={yearObj.year}
+            defaultExpanded={yearObj.year === currentYear}
+            sx={{
+              bgcolor: "#151515", // Fundo mais escuro pro ano
+              color: "white",
+              mb: 2,
+              border: "1px solid #333",
+              borderRadius: "8px !important",
+              "&::before": { display: "none" },
+            }}
+          >
+            <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: "#4caf50" }} />}>
+              <Box sx={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <Typography variant="h6" sx={{ color: "#4caf50", fontWeight: "bold" }}>
+                  📅 Ano {yearObj.year}
+                </Typography>
+                <Typography sx={{ color: "#aaa", fontWeight: "bold", mr: 2 }}>
+                  ⏱️ {minutesToHHMM(yearObj.totalMinutes)}
+                </Typography>
               </Box>
             </AccordionSummary>
-
-            <AccordionDetails>
-              <Stack direction="column" spacing={1}>
-                {month.days.map((p) => (
-                  <Paper key={p.id} sx={{ p: 1.5, bgcolor: "#252525", borderRadius: 2 }}>
-                    <Stack direction="row" justifyContent="space-between" alignItems="center">
-                      <Typography sx={{ color: "#fff" }}>
-                        {(() => {
-                          const [y, m, d] = p.id.split("-");
-                          return `${d}/${m}/${y}`;
-                        })()}
+            <AccordionDetails sx={{ p: 1 }}>
+              {yearObj.months.map((month) => (
+                <Accordion
+                  key={month.monthKey}
+                  defaultExpanded={month.monthKey === currentMonthKey}
+                  sx={{
+                    bgcolor: "#1a1a1a",
+                    color: "white",
+                    mb: 1,
+                    "&::before": { display: "none" },
+                    border: "1px solid #222",
+                    borderRadius: "8px !important",
+                  }}
+                >
+                  <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: "#fff" }} />}>
+                    <Box sx={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2, flexWrap: "wrap" }}>
+                      <Typography sx={{ textTransform: "capitalize", fontWeight: "bold" }}>
+                        {month.label} — ⏱️ {minutesToHHMM(month.totalMinutes)}
                       </Typography>
 
-                      <Stack direction="row" spacing={1} alignItems="center">
-                        {temPermissao && (
-                          <IconButton size="small" color="primary" onClick={() => openEditModal(p)} title="Editar ponto">
-                            <EditIcon />
-                          </IconButton>
-                        )}
-                        <Chip label={`${p.status || "OK"}`} size="small" sx={{ bgcolor: "#333", color: "white", fontWeight: "bold" }} />
-                      </Stack>
-                    </Stack>
-
-                    <Typography variant="body2" color="#bbb" sx={{ mt: 1 }}>
-                      Entrada: {p.entrada || "-"} | Saída Int.: {p.intervaloSaida || "-"} | Volta Int.: {p.intervaloVolta || "-"} | Saída: {p.saida || "-"}
-                    </Typography>
-
-                    <Typography variant="body2" color="#999" sx={{ mt: 0.5 }}>
-                      ⏰ Total: {minutesToHHMM(calcMinutesWorkedForDay(p))}
-                    </Typography>
-
-                    {p.atestadoUrl && (
-                      <Box mt={1}>
-                        <a href={p.atestadoUrl} target="_blank" rel="noopener noreferrer">
-                          📎 Ver Atestado
-                        </a>
-                      </Box>
-                    )}
-
-                    <Stack direction="row" spacing={1} mt={1}>
-                      <Button variant="outlined" color="info" component="label" size="small" startIcon={<PhotoCamera />}>
-                        Enviar Atestado
-                        <input hidden type="file" accept="image/*,application/pdf" onChange={(e) => handleUploadAtestado(p.id, e.target.files[0])} />
-                      </Button>
-                      {temPermissao && (
-                        <IconButton color="error" onClick={() => handleExcluirPonto(p.id)}>
-                          <DeleteForeverIcon />
-                        </IconButton>
-                      )}
-                      {temPermissao && (
-                        <Button size="small" variant="outlined" onClick={() => clearTimestamp(p.id, "saida")}>
-                          Limpar Saída
+                      {(isAdmin || isGerente) && (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          sx={{ ml: 2 }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openAddManualPointModal(month);
+                          }}
+                        >
+                          + Ponto Manual
                         </Button>
                       )}
+
+                      {(isAdmin || isGerente) ? (
+                        <Stack direction="row" spacing={1} onClick={(e) => e.stopPropagation()}>
+                          <Button variant="outlined" size="small" onClick={() => gerarRelatorio(month)}>
+                            Relatório
+                          </Button>
+                          <Button variant="contained" color="success" size="small" onClick={() => gerarContraChequePdf(month, 1660.63)}>
+                            Contra-Cheque
+                          </Button>
+                        </Stack>
+                      ) : (
+                        <Button variant="outlined" size="small" disabled>
+                          Relatório
+                        </Button>
+                      )}
+                    </Box>
+                  </AccordionSummary>
+
+                  <AccordionDetails>
+                    <Stack direction="column" spacing={1}>
+                      {month.days.map((p) => (
+                        <Paper key={p.id} sx={{ p: 1.5, bgcolor: "#252525", borderRadius: 2 }}>
+                          <Stack direction="row" justifyContent="space-between" alignItems="center">
+                            <Typography sx={{ color: "#fff" }}>
+                              {(() => {
+                                const [y, m, d] = p.id.split("-");
+                                return `${d}/${m}/${y}`;
+                              })()}
+                            </Typography>
+
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              {temPermissao && (
+                                <IconButton size="small" color="primary" onClick={() => openEditModal(p)} title="Editar ponto">
+                                  <EditIcon />
+                                </IconButton>
+                              )}
+                              <Chip label={`${p.status || "OK"}`} size="small" sx={{ bgcolor: "#333", color: "white", fontWeight: "bold" }} />
+                            </Stack>
+                          </Stack>
+
+                          <Typography variant="body2" color="#bbb" sx={{ mt: 1 }}>
+                            Entrada: {p.entrada || "-"} | Saída Int.: {p.intervaloSaida || "-"} | Volta Int.: {p.intervaloVolta || "-"} | Saída: {p.saida || "-"}
+                          </Typography>
+
+                          <Typography variant="body2" color="#999" sx={{ mt: 0.5 }}>
+                            ⏰ Total: {minutesToHHMM(calcMinutesWorkedForDay(p))}
+                          </Typography>
+
+                          {p.atestadoUrl && (
+                            <Box mt={1}>
+                              <a href={p.atestadoUrl} target="_blank" rel="noopener noreferrer">
+                                📎 Ver Atestado
+                              </a>
+                            </Box>
+                          )}
+
+                          <Stack direction="row" spacing={1} mt={1} flexWrap="wrap">
+                            <Button variant="outlined" color="info" component="label" size="small" startIcon={<PhotoCamera />}>
+                              Enviar Atestado
+                              <input hidden type="file" accept="image/*,application/pdf" onChange={(e) => handleUploadAtestado(p.id, e.target.files[0])} />
+                            </Button>
+                            {temPermissao && (
+                              <IconButton color="error" onClick={() => handleExcluirPonto(p.id)}>
+                                <DeleteForeverIcon />
+                              </IconButton>
+                            )}
+                            {temPermissao && (
+                              <Button size="small" variant="outlined" onClick={() => clearTimestamp(p.id, "saida")}>
+                                Limpar Saída
+                              </Button>
+                            )}
+                          </Stack>
+                        </Paper>
+                      ))}
                     </Stack>
-                  </Paper>
-                ))}
-              </Stack>
+                  </AccordionDetails>
+                </Accordion>
+              ))}
             </AccordionDetails>
           </Accordion>
         ))}

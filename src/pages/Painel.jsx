@@ -28,6 +28,8 @@ import {
   Stack,
   Box,
   IconButton,
+  Switch,
+  FormControlLabel,
 } from "@mui/material";
 import LogoutIcon from "@mui/icons-material/Logout";
 import AddIcon from "@mui/icons-material/Add";
@@ -40,8 +42,10 @@ import * as faceapi from "@vladmandic/face-api";
 import ConsentDialogs from "../components/ConsentDialogs";
 import PontoRapido from "../components/PontoRapido";
 import { useFaceApi } from "../contexts/FaceApiContext";
+import { estaDentroDaLoja, preAquecerLocalizacao, getExigirGPS, setExigirGPS } from "../utils/geoUtils";
 import FaceRetouchingNaturalIcon from "@mui/icons-material/FaceRetouchingNatural";
 import Inventory2Icon from "@mui/icons-material/Inventory2";
+import EstoqueAlertBanner from "../components/EstoqueAlertBanner";
 
 const ADMIN_UID = "mD3ie8YGmgaup2VVDpKuMBltXgp2";
 const BRAZIL_TZ = "America/Sao_Paulo";
@@ -66,6 +70,7 @@ export default function Painel() {
   const [reconhecimentoEmAndamento, setReconhecimentoEmAndamento] = useState(false);
   const [pontoRapidoOpen, setPontoRapidoOpen] = useState(false);
   const [botaoBloqueado, setBotaoBloqueado] = useState(false);
+  const [exigirGPS, setExigirGPSState] = useState(true);
 
   const DOCUMENT_VERSION = "1.0";
 
@@ -178,12 +183,27 @@ useEffect(() => {
         console.error("Erro ao rodar verificarFolgaGlobalDiaAtual no Painel:", err);
       }
     })();
+    // 🔥 Pré-aquece a localização em background (silencioso)
+    preAquecerLocalizacao();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // roda apenas uma vez na montagem
 
   const handleLogout = async () => {
     await signOut(auth);
     navigate("/");
+  };
+
+  const toggleExigirGPS = async () => {
+    if (!isAdmin && !isGerente) return; // só admin/gerente
+    const novo = !exigirGPS;
+    setExigirGPSState(novo); // atualização otimista (instantâneo)
+    try {
+      await setExigirGPS(lojaId, novo);
+    } catch (err) {
+      console.error("Erro ao salvar exigirGPS:", err);
+      setExigirGPSState(!novo); // rollback
+      alert("Erro ao salvar configuração de GPS.");
+    }
   };
 
   // 📦 Carregar funcionários
@@ -214,6 +234,8 @@ useEffect(() => {
     if (lojaId) {
       carregarFuncionarios(lojaId);
       carregarNomeLoja(lojaId);
+      // 🔥 Lê a flag de exigir GPS
+      getExigirGPS(lojaId, { forcar: true }).then(setExigirGPSState);
     }
   }, [lojaId]);
 
@@ -445,6 +467,30 @@ const proceedWithFacialRecognition = async (funcId, nomeFuncionario) => {
         </Typography>
       </Box>
 
+      {/* 📍 TOGGLE EXIGIR GPS (só admin/gerente) */}
+      {(isAdmin || isGerente) && (
+        <Paper sx={{ p: 1.5, mb: 2, bgcolor: "#1e1e1e", borderRadius: 2, display: "flex", justifyContent: "center" }}>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={exigirGPS}
+                onChange={toggleExigirGPS}
+                color="success"
+              />
+            }
+            label={
+              <Typography sx={{ color: exigirGPS ? "#4caf50" : "#bbb", fontWeight: "bold" }}>
+                📍 {exigirGPS ? "GPS ATIVADO" : "GPS DESATIVADO"} — ponto exige localização
+              </Typography>
+            }
+            sx={{ m: 0 }}
+          />
+        </Paper>
+      )}
+
+      {/* 📦 ALERTA DE ESTOQUE */}
+      {(isAdmin || isGerente) && <EstoqueAlertBanner />}
+
       {(isAdmin || isGerente) && (
         <Paper sx={{ p: 3, mb: 4, bgcolor: "#1e1e1e", color: "white", borderRadius: 3 }}>
           <Box component="form" onSubmit={adicionarFuncionario} display="flex" gap={2}>
@@ -471,22 +517,39 @@ const proceedWithFacialRecognition = async (funcId, nomeFuncionario) => {
           size="large"
           fullWidth
           startIcon={<FaceRetouchingNaturalIcon />}
-          onClick={() => setPontoRapidoOpen(true)}
+          onClick={async () => {
+            const precisa = await getExigirGPS(lojaId);
+            if (precisa) {
+              const check = await estaDentroDaLoja();
+              if (!check.ok) {
+                const msg = check.erro
+                  ? `❌ ${check.erro}`
+                  : `⚠️ Você precisa estar a até ${check.raio}m da loja.\n\n` +
+                    `📍 Local: ${check.endereco}\n` +
+                    `📏 Você está a ${check.distancia}m (precisão ±${check.precisao}m).`;
+                alert(msg);
+                return;
+              }
+            }
+            setPontoRapidoOpen(true);
+          }}
           sx={{ py: 1.5, fontSize: "1.1rem" }}
         >
           🕐 Bater Ponto Rápido
         </Button>
-        <Button
-          variant="contained"
-          color="primary"
-          size="large"
-          fullWidth
-          startIcon={<Inventory2Icon />}
-          onClick={() => navigate(`/loja/${lojaId}/estoque`)}
-          sx={{ py: 1.5, fontSize: "1.1rem" }}
-        >
-          📦 Estoque
-        </Button>
+        {(isAdmin || isGerente) && (
+          <Button
+            variant="contained"
+            color="primary"
+            size="large"
+            fullWidth
+            startIcon={<Inventory2Icon />}
+            onClick={() => navigate(`/loja/${lojaId}/estoque`)}
+            sx={{ py: 1.5, fontSize: "1.1rem" }}
+          >
+            📦 Estoque
+          </Button>
+        )}
       </Stack>
 
       <PontoRapido
